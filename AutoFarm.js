@@ -1,13 +1,14 @@
-/* AutoFarm.js – AutoFarm remoto (um botão via $.getScript)
- * Requisitos: estar em screen=am_farm, jQuery disponível
- * Funcionalidades:
+/* AutoFarm.js – BR138 – AutoFarm remoto (um botão via $.getScript)
+ * Requisitos: estar em screen=am_farm (Assistente de Saque) e jQuery disponível
+ * Recursos:
  * - Painel com Start/Stop
- * - Checkboxes de tropas + quantidade por tropa
+ * - Checkboxes por tropa + quantidade
  * - Intervalo (min), Lote (qtd. por ciclo)
- * - "Só alvos já atacados" (linhas com link de relatório)
- * - "Sem perdas (ignorar amarelo)" igual ao script original
- * - Envia usando Template A (ícone A), atualizando o template antes de cada ciclo
+ * - "Só alvos já atacados" (tem link de relatório)
+ * - "Sem perdas (ignorar amarelo)" (igual original)
  * - Ignora vermelho e vermelho/azul sempre
+ * - Envia via Template A (ícone A), atualizando o template antes de cada ciclo
+ * Notas BR: aceita .png ou .webp (@2x) nos ícones (dots e unidades)
  */
 (function(){
   'use strict';
@@ -17,11 +18,11 @@
     return;
   }
 
-  // Evitar múltiplas instâncias: se já carregado, só reexibe o painel e sai
+  // Evita múltiplas instâncias
   if (window.AutoFarm && window.AutoFarm.__loaded) {
     var p0 = document.getElementById('autoFarmPanel_hosted_single');
     if (p0) p0.style.display = 'block';
-    if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm já carregado.');
+    if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm já carregado (BR138).');
     return;
   }
 
@@ -40,11 +41,11 @@
     if (p) return p;
 
     const units = game_data.units.filter(u=>!skipUnits.has(u));
-    const savedUnits = JSON.parse(localStorage.getItem('AF_units')||'{}');
-    const intSaved   = Number(localStorage.getItem('AF_int')||3);
-    const batchSaved = Number(localStorage.getItem('AF_batch')||10);
-    const onlyKnownSaved = localStorage.getItem('AF_onlyKnown')!=='0';
-    const noLossesSaved  = localStorage.getItem('AF_noLosses')!=='0'; // default true
+    const savedUnits   = JSON.parse(localStorage.getItem('AF_units')||'{}');
+    const intSaved     = Number(localStorage.getItem('AF_int')||3);
+    const batchSaved   = Number(localStorage.getItem('AF_batch')||10);
+    const onlyKnownSav = localStorage.getItem('AF_onlyKnown')!=='0'; // default true
+    const noLossesSav  = localStorage.getItem('AF_noLosses')!=='0';  // default true
 
     p = document.createElement('div');
     p.id = PANEL_ID;
@@ -55,7 +56,7 @@
     `;
     p.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:move;" id="af_drag">
-        <strong style="flex:1">AutoFarm (Template A – remoto)</strong>
+        <strong style="flex:1">AutoFarm (Template A – BR138)</strong>
         <button id="af_hide" class="btn btn-cancel" title="Ocultar painel">×</button>
       </div>
 
@@ -68,10 +69,10 @@
 
       <div style="display:flex; gap:10px; align-items:center; margin-bottom:6px;">
         <label title="Só alvos com relatório (já atacados)">
-          <input id="af_onlyKnown" type="checkbox" ${onlyKnownSaved?'checked':''}> Só alvos já atacados
+          <input id="af_onlyKnown" type="checkbox" ${onlyKnownSav?'checked':''}> Só alvos já atacados
         </label>
         <label title="Ignorar indicadores amarelos (perdas parciais)">
-          <input id="af_noLosses" type="checkbox" ${noLossesSaved?'checked':''}> Sem perdas (ignorar amarelo)
+          <input id="af_noLosses" type="checkbox" ${noLossesSav?'checked':''}> Sem perdas (ignorar amarelo)
         </label>
       </div>
 
@@ -112,8 +113,8 @@
       localStorage.setItem('AF_units', JSON.stringify(state));
       localStorage.setItem('AF_int', String(q('#af_interval').value||3));
       localStorage.setItem('AF_batch', String(q('#af_batch').value||10));
-      localStorage.setItem('AF_onlyKnown', q('#af_onlyKnown').checked ? '1' : '0'));
-      localStorage.setItem('AF_noLosses',  q('#af_noLosses').checked  ? '1' : '0'));
+      localStorage.setItem('AF_onlyKnown', q('#af_onlyKnown').checked ? '1' : '0');
+      localStorage.setItem('AF_noLosses',  q('#af_noLosses').checked  ? '1' : '0');
     }
     p.addEventListener('change', (ev)=>{
       const t = ev.target;
@@ -182,8 +183,11 @@
     await $.ajax({ url: form.getAttribute('action'), method:'POST', data: formData });
   }
 
+  // Filtra por dots, relatório e ícone A
   function pickTargets(batch, onlyKnown, noLosses){
-    const rows = qa('#plunder_list tr[id^="village_"]');
+    // Em alguns mundos PT/BR existem múltiplas listas; pegamos todas
+    const lists = ['#plunder_list', '#plunder_list_1', '#plunder_list_2'];
+    const rows = lists.flatMap(sel => Array.from(document.querySelectorAll(sel+' tr[id^="village_"]')));
     const chosen = [];
     for (const tr of rows) {
       const dot = tr.querySelector('img[src*="graphic/dots/"]');
@@ -210,7 +214,7 @@
     return chosen;
   }
 
-  // Enviar com Template A via TribalWars.post (CSRF + throttle)
+  // Envia com Template A via TribalWars.post (CSRF + throttle do jogo)
   async function sendWithTemplateA(targetId, originVillageId){
     return new Promise((resolve, reject) => {
       try{
@@ -218,8 +222,8 @@
         const data = { target: targetId, template_id: getTemplateAId(), source: originVillageId };
 
         // Throttle conforme o jogo
-        const n = Timing.getElapsedTimeSinceLoad ? Timing.getElapsedTimeSinceLoad() : Date.now();
-        if (Accountmanager && Accountmanager.farm) {
+        const n = (window.Timing && Timing.getElapsedTimeSinceLoad) ? Timing.getElapsedTimeSinceLoad() : Date.now();
+        if (window.Accountmanager && Accountmanager.farm) {
           if (Accountmanager.farm.last_click && n - Accountmanager.farm.last_click < 200) {
             return setTimeout(() => {
               sendWithTemplateA(targetId, originVillageId).then(resolve).catch(reject);
@@ -299,7 +303,7 @@
     status('parado');
   }
 
-  // ---------- API pública e boot ----------
+  // ---------- API pública e bootstrap ----------
   window.AutoFarm = {
     start, stop,
     isRunning: ()=>running,
@@ -307,5 +311,5 @@
   };
 
   ensurePanel(true);
-  if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm carregado.');
+  if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm (BR138) carregado.');
 })();
