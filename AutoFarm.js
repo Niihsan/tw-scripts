@@ -1,10 +1,11 @@
-/* AutoFarm.js – BR138 – AutoFarm remoto (um botão via $.getScript)
- * Novidades:
- *   - Intervalo por combo (Origem+Alvo) – NÃO reenviar antes de X minutos.
- *   - “Ataques possíveis”: calcula a partir das quantidades marcadas e tropas disponíveis.
- * Mantém:
- *   - Start/Stop, Lote, Intervalo entre ciclos, Só alvos já atacados, Sem perdas (ignorar amarelo).
- *   - Envio via Template A usando TribalWars.post (CSRF + throttle interno).
+/* AutoFarm.js – BR138 – Versão 2 (multi-origem, tipo FarmGod)
+ * - Varre TODAS as aldeias do grupo selecionado
+ * - Ordena alvos por distância para cada origem
+ * - Proteção por combo (origem+alvo) em minutos
+ * - "Ataques possíveis" CONSIDERANDO as tropas disponíveis em cada origem
+ * - Filtros: só alvos já atacados, sem perdas (ignorar amarelo), distância máxima (campos)
+ * - Lote por origem em cada ciclo
+ * - Envio via Template A usando TribalWars.post (CSRF + throttle interno)
  */
 (function(){
   'use strict';
@@ -14,31 +15,51 @@
     return;
   }
 
-  // Evitar múltiplas instâncias
+  // Evita múltiplas instâncias
   if (window.AutoFarm && window.AutoFarm.__loaded) {
-    var p0 = document.getElementById('autoFarmPanel_hosted_single');
+    const p0 = document.getElementById('autoFarmPanel_hosted_single_v2');
     if (p0) p0.style.display = 'block';
-    if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm já carregado (BR138).');
+    if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm v2 já carregado (BR138).');
     return;
   }
 
   const $ = window.$;
-  const PANEL_ID = 'autoFarmPanel_hosted_single';
-  const skipUnits = new Set(['ram','catapult','knight','snob','militia']);
+  const PANEL_ID = 'autoFarmPanel_hosted_single_v2';
+  const skipUnits = new Set(['ram','catapult','knight','snob','militia']); // nunca usamos p/ farm micro
   const sleep = (ms) => new Promise(r=>setTimeout(r,ms));
   const q  = (sel, ctx=document) => ctx.querySelector(sel);
   const qa = (sel, ctx=document) => Array.from(ctx.querySelectorAll(sel));
 
   // Persistência do "intervalo por combo (origem+alvo)"
-  const LAST_KEY = 'AF_lastSent_v2'; // { "originId:targetId": unix_sec }
+  const LAST_KEY = 'AF_lastSent_v2_combo'; // { "originId:targetId": unix_sec }
   function loadLast() { try{ return JSON.parse(localStorage.getItem(LAST_KEY) || '{}'); }catch(_){ return {}; } }
   function saveLast(map){ try{ localStorage.setItem(LAST_KEY, JSON.stringify(map)); }catch(_){} }
   let lastSent = loadLast();
 
   let running = false, timer = null;
 
+  // ---------- Biblioteca leve ----------
+  function toCoordObj(coord){ const m = (coord||'').match(/(\d{1,3})\|(\d{1,3})/); return m?{x:+m[1],y:+m[2]}:null; }
+  function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+  function nowSec(){ return Math.floor(Date.now()/1000); }
+
   // ---------- UI ----------
-  function buildPanel(){
+  async function buildGroupSelect(selectedId){
+    try{
+      const resp = await $.get(TribalWars.buildURL('GET','groups',{ ajax:'load_group_menu' }));
+      let html = '<select id="af_group" style="max-width:180px">';
+      resp.result.forEach(g=>{
+        if (g.type==='separator') html += '<option disabled>────────</option>';
+        else html += `<option value="${g.group_id}" ${String(g.group_id)===String(selectedId)?'selected':''}>${g.name}</option>`;
+      });
+      html += '</select>';
+      return html;
+    }catch(e){
+      return `<select id="af_group"><option value="0" selected>Todos</option></select>`;
+    }
+  }
+
+  async function buildPanel(){
     let p = q('#'+PANEL_ID);
     if (p) return p;
 
@@ -49,25 +70,36 @@
     const onlyKnownSav = localStorage.getItem('AF_onlyKnown')!=='0'; // default true
     const noLossesSav  = localStorage.getItem('AF_noLosses')!=='0';  // default true
     const gapSaved     = Number(localStorage.getItem('AF_gapMin')||15); // intervalo por combo (min)
+    const maxFieldsSav = Number(localStorage.getItem('AF_maxFields')||25);
+    const groupSav     = localStorage.getItem('AF_groupId')||'0';
+
+    const groupSelect = await buildGroupSelect(groupSav);
 
     p = document.createElement('div');
     p.id = PANEL_ID;
     p.style.cssText = `
       position:fixed; top:80px; right:16px; z-index:99999;
-      background:#fff; border:1px solid #7d510f; padding:10px; width:340px;
+      background:#fff; border:1px solid #7d510f; padding:10px; width:380px;
       box-shadow:0 6px 18px rgba(0,0,0,.2); border-radius:10px; font:12px/1.25 Arial, sans-serif;
     `;
     p.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:move;" id="af_drag">
-        <strong style="flex:1">AutoFarm (Template A – BR138)</strong>
+        <strong style="flex:1">AutoFarm v2 (Template A – BR138)</strong>
         <button id="af_hide" class="btn btn-cancel" title="Ocultar painel">×</button>
+      </div>
+
+      <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+        <label>Grupo:</label>
+        ${groupSelect}
+        <label style="margin-left:8px" title="Distância máxima (campos)">Campos máx.:</label>
+        <input id="af_maxFields" type="number" min="1" step="1" value="${maxFieldsSav}" style="width:64px;">
       </div>
 
       <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
         <label title="minutos entre ciclos">Intervalo (min):</label>
         <input id="af_interval" type="number" min="0.2" step="0.1" value="${intSaved}" style="width:64px;">
-        <label>Lote:</label>
-        <input id="af_batch" type="number" min="1" step="1" value="${batchSaved}" style="width:64px;">
+        <label>Lote/origem:</label>
+        <input id="af_batch" type="number" min="1" step="1" value="${batchSaved}" style="width:80px;">
       </div>
 
       <div style="display:flex; gap:10px; align-items:center; margin-bottom:6px;">
@@ -79,7 +111,7 @@
         </label>
       </div>
 
-      <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
+      <div style="display:flex; gap:6px; align-items:center; margin-bottom:8px;">
         <label title="NÃO reatacar mesmo alvo a partir da MESMA origem antes desse tempo">Proteção por alvo (min):</label>
         <input id="af_gapMin" type="number" min="1" step="1" value="${gapSaved}" style="width:64px;">
       </div>
@@ -105,7 +137,7 @@
       row.innerHTML = `
         <input type="checkbox" class="af_cb" data-u="${u}" ${checked?'checked':''}>
         <img src="${image_base+'unit/unit_'+u+'.png'}" style="width:16px;height:16px;">
-        <span style="width:110px;text-transform:capitalize">${u}</span>
+        <span style="width:120px;text-transform:capitalize">${u}</span>
         <input type="number" min="0" step="1" value="${qty}" class="af_qty" data-u="${u}" style="width:100px;">
       `;
       box.appendChild(row);
@@ -125,14 +157,15 @@
       localStorage.setItem('AF_onlyKnown', q('#af_onlyKnown').checked ? '1' : '0');
       localStorage.setItem('AF_noLosses',  q('#af_noLosses').checked  ? '1' : '0');
       localStorage.setItem('AF_gapMin',    String(q('#af_gapMin').value||15));
-      // Recalcula “ataques possíveis” quando mudar algo
-      calcPossibleAttacks();
+      localStorage.setItem('AF_maxFields', String(q('#af_maxFields').value||25));
+      localStorage.setItem('AF_groupId',   String(q('#af_group').value||'0'));
     }
     p.addEventListener('change', (ev)=>{
       const t = ev.target;
       if (t.classList.contains('af_cb') || t.classList.contains('af_qty') ||
           t.id==='af_interval' || t.id==='af_batch' || t.id==='af_onlyKnown' ||
-          t.id==='af_noLosses' || t.id==='af_gapMin') {
+          t.id==='af_noLosses' || t.id==='af_gapMin' || t.id==='af_maxFields' ||
+          t.id==='af_group') {
         saveState();
       }
     });
@@ -156,28 +189,18 @@
     q('#af_start').onclick = start;
     q('#af_stop').onclick  = stop;
 
-    // Primeiro cálculo de “ataques possíveis”
-    calcPossibleAttacks();
-
     return p;
   }
 
   function status(txt){ const s = q('#af_status'); if (s) s.textContent = txt; }
   function info(txt){ const i = q('#af_info'); if (i) i.textContent = txt; }
-  function ensurePanel(show=true){
-    const p = buildPanel();
+  async function ensurePanel(show=true){
+    const p = await buildPanel();
     if (show) p.style.display='block';
     return p;
   }
 
-  // ---------- Auxílio ----------
-  function currentVillageId(){
-    const m = (location.search||'').match(/village=(\d+)/);
-    if (m) return Number(m[1]);
-    const v = $('#menu_row2 a.village-switch').data('id');
-    return v ? Number(v) : game_data.village.id;
-  }
-
+  // ---------- Coleta de dados ----------
   function getTemplateAId(){
     const inp = q('form[action*="action=edit_all"] input[name*="template"][name*="[id]"]');
     return inp ? Number(inp.value) : 1;
@@ -201,99 +224,155 @@
     await $.ajax({ url: form.getAttribute('action'), method:'POST', data: formData });
   }
 
-  // Busca tropas disponíveis visíveis na UI (“Disponibilidade desta aldeia”)
-  function getAvailableUnitsInThisVillage(){
-    // Procura números próximos dos ícones de cada unidade no bloco "Disponibilidade"
-    const av = {};
-    const icons = qa('.units-entry-all img, .unit_link img, #units_entry_all img'); // tenta variações
-    icons.forEach(img=>{
-      const m = (img.src||'').match(/unit_(\w+)\./);
-      if (!m) return;
-      const u = m[1];
-      if (skipUnits.has(u)) return;
-      // tenta achar número como próximo irmão/parent
-      let num = 0;
-      const span = img.parentElement && img.parentElement.querySelector('strong, span') ;
-      if (span && /\d/.test(span.textContent||'')) num = parseInt((span.textContent||'0').replace(/\D+/g,''),10)||0;
-      // fallback: procura próximo texto numérico na mesma linha
-      if (!num){
-        const td = img.closest('td, div');
-        if (td){
-          const txt = td.textContent||'';
-          const m2 = txt.replace(/\s+/g,' ').match(/(\d[\d\.]*)/);
-          if (m2) num = parseInt(m2[1].replace(/\D+/g,''),10)||0;
-        }
-      }
-      if (!isNaN(num)) av[u] = num;
-    });
-    return av; // ex.: { spear:123, sword:0, axe:800, light:1000, ...}
+  // Lê todas as aldeias (id, nome, coord, tropas disponíveis) do grupo escolhido
+  async function fetchVillages(groupId){
+    const data = {};
+    const url = TribalWars.buildURL('GET','overview_villages',{ mode:'combined', group: groupId });
+    async function processPage(page){
+      const html = await $.ajax({url: url + (page===-1?'':'&page='+page)});
+      const $html = $(html);
+      // linhas .row_a .row_b
+      $html.find('#combined_table .row_a, #combined_table .row_b').each(function(){
+        const $el = $(this);
+        const $qel = $el.find('.quickedit-label').first();
+        const coordStr = ($qel.text()||'').match(/\d{1,3}\|\d{1,3}/);
+        if (!coordStr) return;
+        const coord = coordStr[0];
+        const id = parseInt($el.find('.quickedit-vn').first().data('id'),10);
+        const name = $qel.data('text') || $qel.text();
+        const units = [];
+        $el.find('.unit-item').each(function(i){
+          const uname = game_data.units[i];
+          if (!skipUnits.has(uname)){
+            units.push(parseInt($(this).text().replace(/\D+/g,''),10)||0);
+          }
+        });
+        data[coord] = { id, name, coord, units }; // units na ordem de game_data.units filtradas
+      });
+
+      // descobrir próxima página
+      const navSel = $html.find('.paged-nav-item').first().closest('td').find('select').first();
+      const navLen = navSel.length>0 ? navSel.find('option').length-1 : $html.find('.paged-nav-item').not('[href*="page=-1"]').length;
+      if (page < navLen) return processPage((page===-1)?1:page+1);
+    }
+    await processPage(-1);
+    return data; // { '123|456': {id, name, coord, units[]}, ...}
   }
 
-  // Calcula “ataques possíveis” = min( floor(avail[u] / needed[u]) ) considerando apenas unidades marcadas
-  function calcPossibleAttacks(){
-    const units = game_data.units.filter(u=>!skipUnits.has(u));
-    const avail = getAvailableUnitsInThisVillage();
-    const needed = {};
-    units.forEach(u=>{
+  // Lê TODOS os alvos da lista de saque (todas as páginas)
+  async function fetchFarms(){
+    const farms = {}; // coord => {id, dot, hasReport}
+    async function process(page){
+      const html = await $.ajax({url: TribalWars.buildURL('GET','am_farm') + '&page=' + page});
+      const $html = $(html);
+      $html.find('#plunder_list tr[id^="village_"], #plunder_list_1 tr[id^="village_"], #plunder_list_2 tr[id^="village_"]').each(function(){
+        const $tr = $(this);
+        const id = parseInt(this.id.split('_')[1],10);
+        const coord = ($tr.find('a[href*="screen=report&mode=all&view="]').first().text()||'').match(/\d{1,3}\|\d{1,3}/);
+        if (!coord) return;
+        const dotImg = $tr.find('img[src*="graphic/dots/"]').attr('src')||'';
+        const hasReport = !!$tr.find('a[href*="screen=report"][href*="view="]').length;
+        farms[coord[0]] = {
+          id,
+          dot: /dots\/(green|yellow|red|blue|red_blue)/.exec(dotImg)?.[1] || 'green',
+          hasReport
+        };
+      });
+      // próxima página?
+      const navSel = $html.find('.paged-nav-item').first().closest('td').find('select').first();
+      const navLen = navSel.length>0 ? navSel.find('option').length-1 : $html.find('.paged-nav-item').not('[href*="page=-1"]').length;
+      if (page < navLen) return process(page+1);
+    }
+    await process(0);
+    return farms; // { '402|515': {id, dot, hasReport}, ...}
+  }
+
+  // Monta plano por origem, respeitando filtros e "ataques possíveis"
+  function planPerOrigin(origins, farms, opts){
+    // monta vetor de unidades por nome -> índice (apenas as usadas)
+    const useUnits = game_data.units.filter(u=>!skipUnits.has(u));
+    const need = {}; // por unidade: quantidade por ataque
+    useUnits.forEach((u,i)=>{
       const cb = q(`.af_cb[data-u="${u}"]`);
       const qtyEl = q(`.af_qty[data-u="${u}"]`);
-      if (cb && qtyEl && cb.checked){
-        needed[u] = Math.max(0, parseInt(qtyEl.value||'0',10)||0);
+      if (cb && cb.checked){
+        need[u] = Math.max(0, parseInt(qtyEl.value||'0',10)||0);
+      } else {
+        need[u] = 0;
       }
     });
 
-    let possible = Infinity;
-    let hasAny = false;
-    Object.keys(needed).forEach(u=>{
-      const need = needed[u];
-      if (need>0){
-        hasAny = true;
-        const have = (avail[u]||0);
-        const count = Math.floor(have / need);
-        possible = Math.min(possible, count);
+    const maxFields = opts.maxFields;
+    const onlyKnown = opts.onlyKnown;
+    const noLosses  = opts.noLosses;
+    const gapSec    = opts.gapSec;
+    const batchPerOrigin = opts.batch;
+
+    const nowS = nowSec();
+    const result = []; // [{originId, targetId}, ...]
+
+    // para cada origem
+    Object.keys(origins).forEach(coordOrigin=>{
+      const org = origins[coordOrigin];
+      const orgCoord = toCoordObj(coordOrigin);
+      if (!orgCoord) return;
+
+      // calcula ataques possíveis nessa origem
+      // unidades disponíveis em "org.units" (a ordem acompanha game_data.units filtradas)
+      let possible = Infinity, hasAny=false;
+      let availByName = {};
+      let idx=0;
+      for (let i=0;i<game_data.units.length;i++){
+        const uname = game_data.units[i];
+        if (skipUnits.has(uname)) continue;
+        const have = org.units[idx++] || 0;
+        availByName[uname] = have;
+      }
+      Object.keys(need).forEach(u=>{
+        const n = need[u];
+        if (n>0){
+          hasAny=true;
+          const have = availByName[u]||0;
+          const count = Math.floor(have / n);
+          possible = Math.min(possible, count);
+        }
+      });
+      if (!hasAny || !isFinite(possible)) possible = 0;
+
+      // quantos vamos enviar neste ciclo para essa origem
+      const quota = Math.min(batchPerOrigin, Math.max(0, possible));
+      if (quota<=0) return;
+
+      // constroi lista de alvos válidos ordenados por distância
+      const ordered = Object.keys(farms).map(coord=>{
+        return { coord, d: dist(orgCoord, toCoordObj(coord)) };
+      }).sort((a,b)=>a.d-b.d);
+
+      let picked = 0;
+      for (const it of ordered){
+        if (picked>=quota) break;
+        const f = farms[it.coord];
+        if (!f) continue;
+
+        // filtros dos dots
+        if (f.dot==='red' || f.dot==='red_blue') continue;
+        if (noLosses && f.dot==='yellow') continue;
+        if (onlyKnown && !f.hasReport) continue;
+        if (it.d > maxFields) continue;
+
+        // proteção por combo
+        const key = org.id + ':' + f.id;
+        const last = lastSent[key] ? Number(lastSent[key]) : 0;
+        if (last && (nowS - last) < gapSec) continue;
+
+        // precisa de A
+        // (assumimos que template A existe; o envio usa endpoint oficial)
+        result.push({ originId: org.id, targetId: f.id, originCoord: coordOrigin, targetCoord: it.coord });
+        picked++;
       }
     });
-    if (!hasAny) { info('Ataques possíveis: marque ao menos uma tropa.'); return 0; }
-    if (!isFinite(possible)) possible = 0;
-    info('Ataques possíveis (nesta aldeia): ' + possible);
-    return possible;
-  }
 
-  // Filtra por dots, relatório e proteção de intervalo (origem+alvo)
-  function pickTargets(batch, onlyKnown, noLosses, gapSeconds, originVillageId){
-    // múltiplas listas
-    const lists = ['#plunder_list', '#plunder_list_1', '#plunder_list_2'];
-    const rows = lists.flatMap(sel => Array.from(document.querySelectorAll(sel+' tr[id^="village_"]')));
-    const nowSec = Math.floor(Date.now()/1000);
-    const chosen = [];
-    for (const tr of rows) {
-      const dot = tr.querySelector('img[src*="graphic/dots/"]');
-      if (!dot) continue;
-
-      const src = dot.getAttribute('src') || '';
-      // Ignora vermelho e vermelho/azul sempre
-      if (/dots\/(?:red|red_blue)\.(?:png|webp)/.test(src)) continue;
-      // Se "sem perdas" marcado: ignora amarelo
-      if (noLosses && /dots\/yellow\.(?:png|webp)/.test(src)) continue;
-
-      // "já atacados" = tem link de relatório
-      const hadReport = !!tr.querySelector('a[href*="screen=report"][href*="view="]');
-      if (onlyKnown && !hadReport) continue;
-
-      // precisa ter ação A disponível
-      const iconA = tr.querySelector('a.farm_icon.farm_icon_a');
-      if (!iconA) continue;
-
-      const targetId = tr.id.split('_')[1];
-      // Proteção por combo (origem+alvo)
-      const key = originVillageId + ':' + targetId;
-      const last = lastSent[key] ? Number(lastSent[key]) : 0;
-      if (last && (nowSec - last) < gapSeconds) continue;
-
-      chosen.push({ tr, targetId });
-      if (chosen.length >= batch) break;
-    }
-    return chosen;
+    return result;
   }
 
   // Envia com Template A via TribalWars.post (CSRF + throttle do jogo)
@@ -314,76 +393,85 @@
           Accountmanager.farm.last_click = n;
         }
 
-        // Chamada oficial com CSRF
         TribalWars.post(
-          url,
-          null,
-          data,
+          url, null, data,
           function ok(resp){ resolve(resp); },
           function err(e){ reject(e || 'Falha no envio'); }
         );
-      }catch(e){
-        reject(e);
-      }
+      }catch(e){ reject(e); }
     });
   }
 
+  // ---------- Ciclo ----------
   async function tick(){
     try{
       if (!running) return;
 
-      const origin = currentVillageId();
-      const batch = Math.max(1, parseInt(q('#af_batch').value||'10',10));
+      const groupId   = q('#af_group')?.value || '0';
+      const batch     = Math.max(1, parseInt(q('#af_batch').value||'10',10));
       const onlyKnown = q('#af_onlyKnown').checked;
       const noLosses  = q('#af_noLosses').checked;
       const gapMin    = Math.max(1, parseInt(q('#af_gapMin').value||'15',10));
       const gapSec    = gapMin * 60;
+      const maxFields = Math.max(1, parseInt(q('#af_maxFields').value||'25',10));
 
       status('salvando template...');
       await saveTemplateAFromPanel();
 
-      // Atualiza "ataques possíveis" antes de coletar (para feedback)
-      calcPossibleAttacks();
+      status('lendo aldeias do grupo...');
+      const villages = await fetchVillages(groupId); // {coord: {id,name,coord,units[]}}
+      status(`aldeias: ${Object.keys(villages).length}`);
 
-      status('coletando alvos...');
-      const targets = pickTargets(batch, onlyKnown, noLosses, gapSec, origin);
-      if (targets.length === 0) { status('sem alvos válidos'); return; }
+      status('lendo lista de saque...');
+      const farms = await fetchFarms(); // {coord:{id,dot,hasReport}}
+      status(`alvos: ${Object.keys(farms).length}`);
 
-      const nowSec = Math.floor(Date.now()/1000);
+      // Planejamento por origem
+      status('planejando...');
+      const plan = planPerOrigin(villages, farms, {
+        maxFields, onlyKnown, noLosses, gapSec, batch
+      });
+      info(`Plano gerado: ${plan.length} envios nesta passada`);
+
+      if (!plan.length){ status('sem alvos válidos'); return; }
+
+      // Executa envios
       let sent = 0;
-      for (const t of targets) {
-        status(`enviando ${sent+1}/${targets.length}...`);
-        try{
-          await sendWithTemplateA(t.targetId, origin);
-          // registra proteção (origem+alvo)
-          lastSent[origin + ':' + t.targetId] = nowSec;
-          saveLast(lastSent);
+      const startT = nowSec();
+      for (const job of plan){
+        if (!running) break;
 
-          if (window.UI && UI.SuccessMessage) UI.SuccessMessage('Envio OK');
-          t.tr.remove();
+        status(`enviando ${sent+1}/${plan.length} (origem ${job.originCoord} → alvo ${job.targetCoord})`);
+        try{
+          await sendWithTemplateA(job.targetId, job.originId);
+          lastSent[job.originId + ':' + job.targetId] = startT; // timestamp base desta rodada
+          if (window.UI && UI.SuccessMessage) UI.SuccessMessage(`OK ${job.originCoord} → ${job.targetCoord}`);
           sent++;
           await sleep(350 + Math.random()*250);
         }catch(e){
           if (window.UI && UI.ErrorMessage) UI.ErrorMessage(e && e.error || 'Falha no envio');
         }
       }
-      status(`OK: ${sent} envios`);
+      saveLast(lastSent);
+      status(`OK: ${sent}/${plan.length} envios`);
     }catch(e){
       console.error(e);
       status('erro: '+(e?.message||e));
     }
   }
 
-  function start(){
+  async function start(){
     if (running) return;
-    ensurePanel(true);
+    await ensurePanel(true);
     running = true;
     const btnS = q('#af_start'), btnP = q('#af_stop');
     if (btnS) btnS.disabled = true;
     if (btnP) btnP.disabled = false;
     status('iniciando...');
     const minutes = Math.max(0.2, parseFloat(q('#af_interval').value||'3'));
-    tick();
+    // primeira passada
+    await tick();
+    // recorrente
     timer = setInterval(tick, minutes*60*1000);
   }
 
@@ -396,13 +484,17 @@
     status('parado');
   }
 
-  // ---------- API pública e bootstrap ----------
+  // ---------- Boot ----------
+  (async function(){
+    await ensurePanel(true);
+    if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm v2 (BR138) carregado.');
+  })();
+
+  // API pública
   window.AutoFarm = {
     start, stop,
     isRunning: ()=>running,
     __loaded: true
   };
 
-  ensurePanel(true);
-  if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm (BR138) carregado.');
 })();
