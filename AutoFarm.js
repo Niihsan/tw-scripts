@@ -1,11 +1,11 @@
-/* AutoFarm.js – BR138 – Versão 2 (multi-origem, tipo FarmGod)
- * - Varre TODAS as aldeias do grupo selecionado
- * - Ordena alvos por distância para cada origem
+/* AutoFarm.js – BR138 – Versão 2.1
+ * - Multi-origem por GRUPO
+ * - Planejamento + renderização na UI (agrupado por origem)
  * - Proteção por combo (origem+alvo) em minutos
- * - "Ataques possíveis" CONSIDERANDO as tropas disponíveis em cada origem
- * - Filtros: só alvos já atacados, sem perdas (ignorar amarelo), distância máxima (campos)
- * - Lote por origem em cada ciclo
- * - Envio via Template A usando TribalWars.post (CSRF + throttle interno)
+ * - "Ataques possíveis" por origem
+ * - Filtros: só alvos já atacados, sem perdas (amarelo), campos máx.
+ * - Lote por origem
+ * - Envio via Template A (TribalWars.post)
  */
 (function(){
   'use strict';
@@ -25,21 +25,22 @@
 
   const $ = window.$;
   const PANEL_ID = 'autoFarmPanel_hosted_single_v2';
-  const skipUnits = new Set(['ram','catapult','knight','snob','militia']); // nunca usamos p/ farm micro
+  const PLAN_ID  = 'AutoFarmPlanTable';
+  const skipUnits = new Set(['ram','catapult','knight','snob','militia']);
   const sleep = (ms) => new Promise(r=>setTimeout(r,ms));
   const q  = (sel, ctx=document) => ctx.querySelector(sel);
   const qa = (sel, ctx=document) => Array.from(ctx.querySelectorAll(sel));
 
-  // Persistência do "intervalo por combo (origem+alvo)"
-  const LAST_KEY = 'AF_lastSent_v2_combo'; // { "originId:targetId": unix_sec }
+  // Persistência proteção (origem+alvo)
+  const LAST_KEY = 'AF_lastSent_v2_combo';
   function loadLast() { try{ return JSON.parse(localStorage.getItem(LAST_KEY) || '{}'); }catch(_){ return {}; } }
   function saveLast(map){ try{ localStorage.setItem(LAST_KEY, JSON.stringify(map)); }catch(_){} }
   let lastSent = loadLast();
 
   let running = false, timer = null;
 
-  // ---------- Biblioteca leve ----------
-  function toCoordObj(coord){ const m = (coord||'').match(/(\d{1,3})\|(\d{1,3})/); return m?{x:+m[1],y:+m[2]}:null; }
+  // Utils
+  function toCoordObj(coord){ const m=(coord||'').match(/(\d{1,3})\|(\d{1,3})/); return m?{x:+m[1],y:+m[2]}:null; }
   function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
   function nowSec(){ return Math.floor(Date.now()/1000); }
 
@@ -67,9 +68,9 @@
     const savedUnits   = JSON.parse(localStorage.getItem('AF_units')||'{}');
     const intSaved     = Number(localStorage.getItem('AF_int')||3);
     const batchSaved   = Number(localStorage.getItem('AF_batch')||10);
-    const onlyKnownSav = localStorage.getItem('AF_onlyKnown')!=='0'; // default true
-    const noLossesSav  = localStorage.getItem('AF_noLosses')!=='0';  // default true
-    const gapSaved     = Number(localStorage.getItem('AF_gapMin')||15); // intervalo por combo (min)
+    const onlyKnownSav = localStorage.getItem('AF_onlyKnown')!=='0';
+    const noLossesSav  = localStorage.getItem('AF_noLosses')!=='0';
+    const gapSaved     = Number(localStorage.getItem('AF_gapMin')||15);
     const maxFieldsSav = Number(localStorage.getItem('AF_maxFields')||25);
     const groupSav     = localStorage.getItem('AF_groupId')||'0';
 
@@ -132,13 +133,12 @@
     units.forEach(u=>{
       const row = document.createElement('div');
       row.style.cssText='display:flex;align-items:center;gap:6px;margin-bottom:4px;';
-      const checked = savedUnits[u]?.checked ?? false;
-      const qty = savedUnits[u]?.qty ?? 0;
+      const saved = savedUnits[u] || {checked:false, qty:0};
       row.innerHTML = `
-        <input type="checkbox" class="af_cb" data-u="${u}" ${checked?'checked':''}>
+        <input type="checkbox" class="af_cb" data-u="${u}" ${saved.checked?'checked':''}>
         <img src="${image_base+'unit/unit_'+u+'.png'}" style="width:16px;height:16px;">
         <span style="width:120px;text-transform:capitalize">${u}</span>
-        <input type="number" min="0" step="1" value="${qty}" class="af_qty" data-u="${u}" style="width:100px;">
+        <input type="number" min="0" step="1" value="${saved.qty}" class="af_qty" data-u="${u}" style="width:100px;">
       `;
       box.appendChild(row);
     });
@@ -200,6 +200,89 @@
     return p;
   }
 
+  // ---------- Planejamento: renderização na UI ----------
+  function clearPlanTable(){
+    $('#'+PLAN_ID).remove();
+  }
+
+  function renderPlanTable(plan){
+    clearPlanTable();
+    // agrupar por origemCoord
+    const groups = {};
+    plan.forEach(j=>{
+      (groups[j.originCoord] = groups[j.originCoord] || []).push(j);
+    });
+
+    const $wrap = $(`
+      <div id="${PLAN_ID}" class="vis" style="margin:8px 0;">
+        <h4>FarmGod</h4>
+        <div id="AF_progress" class="progress-bar live-progress-bar progress-bar-alive" style="width:98%;margin:5px auto;">
+          <div style="background: rgb(146, 194, 0);"></div>
+          <span class="label" style="margin-top:0px;"></span>
+        </div>
+        <table class="vis" width="100%">
+          <thead>
+            <tr>
+              <th style="text-align:center;">Origem</th>
+              <th style="text-align:center;">Target</th>
+              <th style="text-align:center;">fields</th>
+              <th style="text-align:center;">Farm</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    `);
+
+    const $tbody = $wrap.find('tbody');
+
+    Object.keys(groups).forEach(originCoord=>{
+      const arr = groups[originCoord];
+      // cabeçalho de origem com botão (apenas visual)
+      $tbody.append(`
+        <tr>
+          <td colspan="4" style="background:#e7d098;">
+            <input type="button" class="btn" value="Ir para ${originCoord}" onclick="location.href='${game_data.link_base_pure}screen=info_village&id=${arr[0].originId}'" style="float:right;">
+            <b style="line-height:24px;">Origem: ${originCoord}</b>
+          </td>
+        </tr>
+      `);
+      arr.forEach(j=>{
+        $tbody.append(`
+          <tr class="af_plan_row" data-origin="${j.originId}" data-target="${j.targetId}">
+            <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${j.originId}">${j.originCoord}</a></td>
+            <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${j.targetId}">${j.targetCoord}</a></td>
+            <td style="text-align:center;">${j.distance.toFixed(2)}</td>
+            <td style="text-align:center;"><span class="farm_icon farm_icon_a" title="Template A"></span></td>
+          </tr>
+        `);
+      });
+    });
+
+    // Injeta antes do widget padrão
+    const $anchor = $('#am_widget_Farm').first();
+    if ($anchor.length) $anchor.before($wrap);
+    else $('body').prepend($wrap);
+
+    // Progress bar
+    if (window.UI && UI.InitProgressBars) {
+      UI.InitProgressBars();
+      if (UI.updateProgressBar) {
+        $('#AF_progress').data('current', 0).data('max', plan.length);
+        UI.updateProgressBar($('#AF_progress'), 0, plan.length);
+      }
+    }
+  }
+
+  function updateProgressAfterSend(){
+    const $pb = $('#AF_progress');
+    if (!$pb.length || !window.UI || !UI.updateProgressBar) return;
+    const cur = ($pb.data('current')||0)+1;
+    const max = ($pb.data('max')||0);
+    $pb.data('current', cur);
+    UI.updateProgressBar($pb, cur, max);
+  }
+
   // ---------- Coleta de dados ----------
   function getTemplateAId(){
     const inp = q('form[action*="action=edit_all"] input[name*="template"][name*="[id]"]');
@@ -224,14 +307,12 @@
     await $.ajax({ url: form.getAttribute('action'), method:'POST', data: formData });
   }
 
-  // Lê todas as aldeias (id, nome, coord, tropas disponíveis) do grupo escolhido
   async function fetchVillages(groupId){
     const data = {};
     const url = TribalWars.buildURL('GET','overview_villages',{ mode:'combined', group: groupId });
-    async function processPage(page){
+    async function process(page){
       const html = await $.ajax({url: url + (page===-1?'':'&page='+page)});
       const $html = $(html);
-      // linhas .row_a .row_b
       $html.find('#combined_table .row_a, #combined_table .row_b').each(function(){
         const $el = $(this);
         const $qel = $el.find('.quickedit-label').first();
@@ -247,21 +328,19 @@
             units.push(parseInt($(this).text().replace(/\D+/g,''),10)||0);
           }
         });
-        data[coord] = { id, name, coord, units }; // units na ordem de game_data.units filtradas
+        data[coord] = { id, name, coord, units };
       });
 
-      // descobrir próxima página
       const navSel = $html.find('.paged-nav-item').first().closest('td').find('select').first();
       const navLen = navSel.length>0 ? navSel.find('option').length-1 : $html.find('.paged-nav-item').not('[href*="page=-1"]').length;
-      if (page < navLen) return processPage((page===-1)?1:page+1);
+      if (page < navLen) return process((page===-1)?1:page+1);
     }
-    await processPage(-1);
-    return data; // { '123|456': {id, name, coord, units[]}, ...}
+    await process(-1);
+    return data;
   }
 
-  // Lê TODOS os alvos da lista de saque (todas as páginas)
   async function fetchFarms(){
-    const farms = {}; // coord => {id, dot, hasReport}
+    const farms = {};
     async function process(page){
       const html = await $.ajax({url: TribalWars.buildURL('GET','am_farm') + '&page=' + page});
       const $html = $(html);
@@ -272,78 +351,58 @@
         if (!coord) return;
         const dotImg = $tr.find('img[src*="graphic/dots/"]').attr('src')||'';
         const hasReport = !!$tr.find('a[href*="screen=report"][href*="view="]').length;
-        farms[coord[0]] = {
-          id,
-          dot: /dots\/(green|yellow|red|blue|red_blue)/.exec(dotImg)?.[1] || 'green',
-          hasReport
-        };
+        const dot = /dots\/(green|yellow|red|blue|red_blue)/.exec(dotImg)?.[1] || 'green';
+        farms[coord[0]] = { id, dot, hasReport };
       });
-      // próxima página?
       const navSel = $html.find('.paged-nav-item').first().closest('td').find('select').first();
       const navLen = navSel.length>0 ? navSel.find('option').length-1 : $html.find('.paged-nav-item').not('[href*="page=-1"]').length;
       if (page < navLen) return process(page+1);
     }
     await process(0);
-    return farms; // { '402|515': {id, dot, hasReport}, ...}
+    return farms;
   }
 
-  // Monta plano por origem, respeitando filtros e "ataques possíveis"
   function planPerOrigin(origins, farms, opts){
-    // monta vetor de unidades por nome -> índice (apenas as usadas)
     const useUnits = game_data.units.filter(u=>!skipUnits.has(u));
-    const need = {}; // por unidade: quantidade por ataque
-    useUnits.forEach((u,i)=>{
+    const need = {};
+    useUnits.forEach(u=>{
       const cb = q(`.af_cb[data-u="${u}"]`);
       const qtyEl = q(`.af_qty[data-u="${u}"]`);
-      if (cb && cb.checked){
-        need[u] = Math.max(0, parseInt(qtyEl.value||'0',10)||0);
-      } else {
-        need[u] = 0;
-      }
+      need[u] = (cb && cb.checked) ? Math.max(0, parseInt(qtyEl.value||'0',10)||0) : 0;
     });
 
-    const maxFields = opts.maxFields;
-    const onlyKnown = opts.onlyKnown;
-    const noLosses  = opts.noLosses;
-    const gapSec    = opts.gapSec;
-    const batchPerOrigin = opts.batch;
-
+    const { maxFields, onlyKnown, noLosses, gapSec, batch } = opts;
     const nowS = nowSec();
-    const result = []; // [{originId, targetId}, ...]
+    const result = [];
 
-    // para cada origem
     Object.keys(origins).forEach(coordOrigin=>{
       const org = origins[coordOrigin];
       const orgCoord = toCoordObj(coordOrigin);
       if (!orgCoord) return;
 
-      // calcula ataques possíveis nessa origem
-      // unidades disponíveis em "org.units" (a ordem acompanha game_data.units filtradas)
-      let possible = Infinity, hasAny=false;
-      let availByName = {};
+      // ataques possíveis nesta origem
+      let possible = Infinity, hasAny=false, availByName={};
       let idx=0;
       for (let i=0;i<game_data.units.length;i++){
         const uname = game_data.units[i];
         if (skipUnits.has(uname)) continue;
         const have = org.units[idx++] || 0;
-        availByName[uname] = have;
+        availByName[uname]=have;
       }
       Object.keys(need).forEach(u=>{
         const n = need[u];
         if (n>0){
           hasAny=true;
-          const have = availByName[u]||0;
-          const count = Math.floor(have / n);
+          const have = (availByName[u]||0);
+          const count = Math.floor(have/n);
           possible = Math.min(possible, count);
         }
       });
       if (!hasAny || !isFinite(possible)) possible = 0;
 
-      // quantos vamos enviar neste ciclo para essa origem
-      const quota = Math.min(batchPerOrigin, Math.max(0, possible));
+      const quota = Math.min(batch, Math.max(0,possible));
       if (quota<=0) return;
 
-      // constroi lista de alvos válidos ordenados por distância
       const ordered = Object.keys(farms).map(coord=>{
         return { coord, d: dist(orgCoord, toCoordObj(coord)) };
       }).sort((a,b)=>a.d-b.d);
@@ -353,21 +412,16 @@
         if (picked>=quota) break;
         const f = farms[it.coord];
         if (!f) continue;
-
-        // filtros dos dots
         if (f.dot==='red' || f.dot==='red_blue') continue;
         if (noLosses && f.dot==='yellow') continue;
         if (onlyKnown && !f.hasReport) continue;
         if (it.d > maxFields) continue;
 
-        // proteção por combo
         const key = org.id + ':' + f.id;
         const last = lastSent[key] ? Number(lastSent[key]) : 0;
         if (last && (nowS - last) < gapSec) continue;
 
-        // precisa de A
-        // (assumimos que template A existe; o envio usa endpoint oficial)
-        result.push({ originId: org.id, targetId: f.id, originCoord: coordOrigin, targetCoord: it.coord });
+        result.push({ originId: org.id, targetId: f.id, originCoord: coordOrigin, targetCoord: it.coord, distance: it.d });
         picked++;
       }
     });
@@ -375,14 +429,11 @@
     return result;
   }
 
-  // Envia com Template A via TribalWars.post (CSRF + throttle do jogo)
   async function sendWithTemplateA(targetId, originVillageId){
     return new Promise((resolve, reject) => {
       try{
         const url = Accountmanager.send_units_link.replace(/village=\d+/, 'village='+originVillageId);
         const data = { target: targetId, template_id: getTemplateAId(), source: originVillageId };
-
-        // Throttle conforme o jogo
         const n = (window.Timing && Timing.getElapsedTimeSinceLoad) ? Timing.getElapsedTimeSinceLoad() : Date.now();
         if (window.Accountmanager && Accountmanager.farm) {
           if (Accountmanager.farm.last_click && n - Accountmanager.farm.last_click < 200) {
@@ -392,12 +443,7 @@
           }
           Accountmanager.farm.last_click = n;
         }
-
-        TribalWars.post(
-          url, null, data,
-          function ok(resp){ resolve(resp); },
-          function err(e){ reject(e || 'Falha no envio'); }
-        );
+        TribalWars.post(url, null, data, r=>resolve(r), e=>reject(e||'Falha no envio'));
       }catch(e){ reject(e); }
     });
   }
@@ -419,32 +465,35 @@
       await saveTemplateAFromPanel();
 
       status('lendo aldeias do grupo...');
-      const villages = await fetchVillages(groupId); // {coord: {id,name,coord,units[]}}
-      status(`aldeias: ${Object.keys(villages).length}`);
+      const villages = await fetchVillages(groupId);
 
       status('lendo lista de saque...');
-      const farms = await fetchFarms(); // {coord:{id,dot,hasReport}}
-      status(`alvos: ${Object.keys(farms).length}`);
+      const farms = await fetchFarms();
 
-      // Planejamento por origem
       status('planejando...');
-      const plan = planPerOrigin(villages, farms, {
-        maxFields, onlyKnown, noLosses, gapSec, batch
-      });
+      const plan = planPerOrigin(villages, farms, { maxFields, onlyKnown, noLosses, gapSec, batch });
+
       info(`Plano gerado: ${plan.length} envios nesta passada`);
+      renderPlanTable(plan);
 
       if (!plan.length){ status('sem alvos válidos'); return; }
 
-      // Executa envios
-      let sent = 0;
       const startT = nowSec();
+      let sent = 0;
+
       for (const job of plan){
         if (!running) break;
 
         status(`enviando ${sent+1}/${plan.length} (origem ${job.originCoord} → alvo ${job.targetCoord})`);
         try{
           await sendWithTemplateA(job.targetId, job.originId);
-          lastSent[job.originId + ':' + job.targetId] = startT; // timestamp base desta rodada
+          lastSent[job.originId + ':' + job.targetId] = startT;
+          saveLast(lastSent);
+
+          // remove linha correspondente da tabela e avança a barra
+          $(`#${PLAN_ID} tr.af_plan_row[data-origin="${job.originId}"][data-target="${job.targetId}"]`).remove();
+          updateProgressAfterSend();
+
           if (window.UI && UI.SuccessMessage) UI.SuccessMessage(`OK ${job.originCoord} → ${job.targetCoord}`);
           sent++;
           await sleep(350 + Math.random()*250);
@@ -452,7 +501,6 @@
           if (window.UI && UI.ErrorMessage) UI.ErrorMessage(e && e.error || 'Falha no envio');
         }
       }
-      saveLast(lastSent);
       status(`OK: ${sent}/${plan.length} envios`);
     }catch(e){
       console.error(e);
@@ -468,10 +516,10 @@
     if (btnS) btnS.disabled = true;
     if (btnP) btnP.disabled = false;
     status('iniciando...');
+    // limpa tabela antiga se houver
+    clearPlanTable();
     const minutes = Math.max(0.2, parseFloat(q('#af_interval').value||'3'));
-    // primeira passada
     await tick();
-    // recorrente
     timer = setInterval(tick, minutes*60*1000);
   }
 
@@ -484,17 +532,12 @@
     status('parado');
   }
 
-  // ---------- Boot ----------
+  // Boot
   (async function(){
     await ensurePanel(true);
-    if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm v2 (BR138) carregado.');
+    if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm v2.1 (BR138) carregado.');
   })();
 
   // API pública
-  window.AutoFarm = {
-    start, stop,
-    isRunning: ()=>running,
-    __loaded: true
-  };
-
+  window.AutoFarm = { start, stop, isRunning: ()=>running, __loaded: true };
 })();
