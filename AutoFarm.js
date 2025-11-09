@@ -1,11 +1,13 @@
-/* FarmAuto.js – AutoFarm remoto (um único botão via $.getScript)
- * Requisitos: estar em screen=am_farm, jQuery disponível (TW padrão)
+/* AutoFarm.js – AutoFarm remoto (um botão via $.getScript)
+ * Requisitos: estar em screen=am_farm, jQuery disponível
  * Funcionalidades:
  * - Painel com Start/Stop
  * - Checkboxes de tropas + quantidade por tropa
- * - Intervalo (min), Lote (qtd. linhas por ciclo) e "Só alvos já atacados"
- * - Envia apenas A (Template A), ignora vermelho/vermelho-azul
- * - Atualiza Template A com as quantidades marcadas antes de cada ciclo
+ * - Intervalo (min), Lote (qtd. por ciclo)
+ * - "Só alvos já atacados" (linhas com link de relatório)
+ * - "Sem perdas (ignorar amarelo)" igual ao script original
+ * - Envia usando Template A (ícone A), atualizando o template antes de cada ciclo
+ * - Ignora vermelho e vermelho/azul sempre
  */
 (function(){
   'use strict';
@@ -17,8 +19,8 @@
 
   // Evitar múltiplas instâncias: se já carregado, só reexibe o painel e sai
   if (window.AutoFarm && window.AutoFarm.__loaded) {
-    var p = document.getElementById('autoFarmPanel_hosted_single');
-    if (p) p.style.display = 'block';
+    var p0 = document.getElementById('autoFarmPanel_hosted_single');
+    if (p0) p0.style.display = 'block';
     if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm já carregado.');
     return;
   }
@@ -26,11 +28,9 @@
   const $ = window.$;
   const PANEL_ID = 'autoFarmPanel_hosted_single';
   const skipUnits = new Set(['ram','catapult','knight','snob','militia']);
-  const okDot = (src) => src && !/dots\/(red|red_blue)\.(?:png|webp)/.test(src);
   const sleep = (ms) => new Promise(r=>setTimeout(r,ms));
   const q  = (sel, ctx=document) => ctx.querySelector(sel);
   const qa = (sel, ctx=document) => Array.from(ctx.querySelectorAll(sel));
-  const post = (url, data) => $.post(url, null, data);
 
   let running = false, timer = null;
 
@@ -40,16 +40,17 @@
     if (p) return p;
 
     const units = game_data.units.filter(u=>!skipUnits.has(u));
-    const saved = JSON.parse(localStorage.getItem('AF_units')||'{}');
-    const intSaved = Number(localStorage.getItem('AF_int')||3);
+    const savedUnits = JSON.parse(localStorage.getItem('AF_units')||'{}');
+    const intSaved   = Number(localStorage.getItem('AF_int')||3);
     const batchSaved = Number(localStorage.getItem('AF_batch')||10);
     const onlyKnownSaved = localStorage.getItem('AF_onlyKnown')!=='0';
+    const noLossesSaved  = localStorage.getItem('AF_noLosses')!=='0'; // default true
 
     p = document.createElement('div');
     p.id = PANEL_ID;
     p.style.cssText = `
       position:fixed; top:80px; right:16px; z-index:99999;
-      background:#fff; border:1px solid #7d510f; padding:10px; width:300px;
+      background:#fff; border:1px solid #7d510f; padding:10px; width:320px;
       box-shadow:0 6px 18px rgba(0,0,0,.2); border-radius:10px; font:12px/1.25 Arial, sans-serif;
     `;
     p.innerHTML = `
@@ -57,18 +58,25 @@
         <strong style="flex:1">AutoFarm (Template A – remoto)</strong>
         <button id="af_hide" class="btn btn-cancel" title="Ocultar painel">×</button>
       </div>
+
       <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
         <label title="minutos entre ciclos">Intervalo (min):</label>
         <input id="af_interval" type="number" min="0.2" step="0.1" value="${intSaved}" style="width:64px;">
         <label>Lote:</label>
-        <input id="af_batch" type="number" min="1" step="1" value="${batchSaved}" style="width:60px;">
+        <input id="af_batch" type="number" min="1" step="1" value="${batchSaved}" style="width:64px;">
       </div>
-      <div id="af_units" style="max-height:210px; overflow:auto; border:1px solid #ddd; padding:6px; border-radius:6px; margin-bottom:8px;"></div>
-      <div style="display:flex; gap:6px; align-items:center; margin-bottom:8px;">
+
+      <div style="display:flex; gap:10px; align-items:center; margin-bottom:6px;">
         <label title="Só alvos com relatório (já atacados)">
           <input id="af_onlyKnown" type="checkbox" ${onlyKnownSaved?'checked':''}> Só alvos já atacados
         </label>
+        <label title="Ignorar indicadores amarelos (perdas parciais)">
+          <input id="af_noLosses" type="checkbox" ${noLossesSaved?'checked':''}> Sem perdas (ignorar amarelo)
+        </label>
       </div>
+
+      <div id="af_units" style="max-height:220px; overflow:auto; border:1px solid #ddd; padding:6px; border-radius:6px; margin-bottom:8px;"></div>
+
       <div style="display:flex; gap:8px; align-items:center;">
         <button id="af_start" class="btn">Start</button>
         <button id="af_stop" class="btn btn-cancel" disabled>Stop</button>
@@ -77,18 +85,18 @@
     `;
     document.body.appendChild(p);
 
-    // Lista de tropas
+    // Linhas de tropas
     const box = q('#af_units');
     units.forEach(u=>{
       const row = document.createElement('div');
       row.style.cssText='display:flex;align-items:center;gap:6px;margin-bottom:4px;';
-      const checked = saved[u]?.checked ?? false;
-      const qty = saved[u]?.qty ?? 0;
+      const checked = savedUnits[u]?.checked ?? false;
+      const qty = savedUnits[u]?.qty ?? 0;
       row.innerHTML = `
         <input type="checkbox" class="af_cb" data-u="${u}" ${checked?'checked':''}>
         <img src="${image_base+'unit/unit_'+u+'.png'}" style="width:16px;height:16px;">
-        <span style="width:88px;text-transform:capitalize">${u}</span>
-        <input type="number" min="0" step="1" value="${qty}" class="af_qty" data-u="${u}" style="width:90px;">
+        <span style="width:100px;text-transform:capitalize">${u}</span>
+        <input type="number" min="0" step="1" value="${qty}" class="af_qty" data-u="${u}" style="width:100px;">
       `;
       box.appendChild(row);
     });
@@ -104,11 +112,12 @@
       localStorage.setItem('AF_units', JSON.stringify(state));
       localStorage.setItem('AF_int', String(q('#af_interval').value||3));
       localStorage.setItem('AF_batch', String(q('#af_batch').value||10));
-      localStorage.setItem('AF_onlyKnown', q('#af_onlyKnown').checked ? '1' : '0');
+      localStorage.setItem('AF_onlyKnown', q('#af_onlyKnown').checked ? '1' : '0'));
+      localStorage.setItem('AF_noLosses',  q('#af_noLosses').checked  ? '1' : '0'));
     }
     p.addEventListener('change', (ev)=>{
       const t = ev.target;
-      if (t.classList.contains('af_cb') || t.classList.contains('af_qty') || t.id==='af_interval' || t.id==='af_batch' || t.id==='af_onlyKnown') {
+      if (t.classList.contains('af_cb') || t.classList.contains('af_qty') || t.id==='af_interval' || t.id==='af_batch' || t.id==='af_onlyKnown' || t.id==='af_noLosses') {
         saveState();
       }
     });
@@ -173,27 +182,64 @@
     await $.ajax({ url: form.getAttribute('action'), method:'POST', data: formData });
   }
 
-  function pickTargets(batch, onlyKnown){
+  function pickTargets(batch, onlyKnown, noLosses){
     const rows = qa('#plunder_list tr[id^="village_"]');
     const chosen = [];
     for (const tr of rows) {
       const dot = tr.querySelector('img[src*="graphic/dots/"]');
-      if (!dot || !okDot(dot.getAttribute('src'))) continue;
+      if (!dot) continue;
+
+      const src = dot.getAttribute('src') || '';
+      // Ignora vermelho e vermelho/azul sempre
+      if (/dots\/(?:red|red_blue)\.(?:png|webp)/.test(src)) continue;
+      // Se "sem perdas" marcado: ignora amarelo
+      if (noLosses && /dots\/yellow\.(?:png|webp)/.test(src)) continue;
+
+      // "já atacados" = tem link de relatório
       const hadReport = !!tr.querySelector('a[href*="screen=report"][href*="view="]');
       if (onlyKnown && !hadReport) continue;
-      const tgtId = tr.id.split('_')[1];
+
+      // precisa ter ação A disponível
       const iconA = tr.querySelector('a.farm_icon.farm_icon_a');
       if (!iconA) continue;
-      chosen.push({tr, targetId: tgtId});
+
+      const targetId = tr.id.split('_')[1];
+      chosen.push({ tr, targetId });
       if (chosen.length >= batch) break;
     }
     return chosen;
   }
 
+  // Enviar com Template A via TribalWars.post (CSRF + throttle)
   async function sendWithTemplateA(targetId, originVillageId){
-    const url = Accountmanager.send_units_link.replace(/village=\d+/, 'village='+originVillageId);
-    const data = { target: targetId, template_id: getTemplateAId(), source: originVillageId };
-    await post(url, data);
+    return new Promise((resolve, reject) => {
+      try{
+        const url = Accountmanager.send_units_link.replace(/village=\d+/, 'village='+originVillageId);
+        const data = { target: targetId, template_id: getTemplateAId(), source: originVillageId };
+
+        // Throttle conforme o jogo
+        const n = Timing.getElapsedTimeSinceLoad ? Timing.getElapsedTimeSinceLoad() : Date.now();
+        if (Accountmanager && Accountmanager.farm) {
+          if (Accountmanager.farm.last_click && n - Accountmanager.farm.last_click < 200) {
+            return setTimeout(() => {
+              sendWithTemplateA(targetId, originVillageId).then(resolve).catch(reject);
+            }, 220);
+          }
+          Accountmanager.farm.last_click = n;
+        }
+
+        // Chamada oficial com CSRF
+        TribalWars.post(
+          url,
+          null,
+          data,
+          function ok(resp){ resolve(resp); },
+          function err(e){ reject(e || 'Falha no envio'); }
+        );
+      }catch(e){
+        reject(e);
+      }
+    });
   }
 
   async function tick(){
@@ -204,8 +250,10 @@
 
       const batch = Math.max(1, parseInt(q('#af_batch').value||'10',10));
       const onlyKnown = q('#af_onlyKnown').checked;
+      const noLosses  = q('#af_noLosses').checked;
+
       status('coletando alvos...');
-      const targets = pickTargets(batch, onlyKnown);
+      const targets = pickTargets(batch, onlyKnown, noLosses);
       if (targets.length === 0) { status('sem alvos válidos'); return; }
 
       const origin = currentVillageId();
@@ -214,10 +262,13 @@
         status(`enviando ${sent+1}/${targets.length}...`);
         try{
           await sendWithTemplateA(t.targetId, origin);
+          if (window.UI && UI.SuccessMessage) UI.SuccessMessage('Envio OK');
           t.tr.remove();
           sent++;
           await sleep(350 + Math.random()*250);
-        }catch(e){}
+        }catch(e){
+          if (window.UI && UI.ErrorMessage) UI.ErrorMessage(e && e.error || 'Falha no envio');
+        }
       }
       status(`OK: ${sent} envios`);
     }catch(e){
