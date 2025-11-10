@@ -1,17 +1,25 @@
-/* AutoFarm.js – BR138 – Versão 2.1
- * - Multi-origem por GRUPO
- * - Planejamento + renderização na UI (agrupado por origem)
+/* AutoFarm.js – BR138 – Versão 2.2
+ * - Redireciona para screen=am_farm se não estiver na página do Assistente de Saque
+ * - Multi-origem por GRUPO, ordenado por distância
  * - Proteção por combo (origem+alvo) em minutos
- * - "Ataques possíveis" por origem
- * - Filtros: só alvos já atacados, sem perdas (amarelo), campos máx.
- * - Lote por origem
+ * - Ataques possíveis por origem (com base nas quantidades marcadas)
+ * - Renderização do planejamento na UI (agrupado por origem + barra de progresso)
+ * - Filtros: Só já atacados, Sem perdas (amarelo), Campos máx., Lote/origem
  * - Envio via Template A (TribalWars.post)
+ * - Busca TODAS as páginas do Assistente (detecta Farm_page/page e preserva order/dir)
  */
 (function(){
   'use strict';
   if (!window.$ || !window.game_data) { console.error('AutoFarm: jQuery/game_data indisponível'); return; }
+
+  // Se NÃO estiver no Assistente de Saque, redireciona e encerra
   if (game_data.screen !== 'am_farm') {
-    (window.UI && UI.ErrorMessage) ? UI.ErrorMessage('Abra o Assistente de Saque (screen=am_farm) e clique de novo no botão.') : alert('Abra o Assistente de Saque (screen=am_farm).');
+    try {
+      location.href = TribalWars.buildURL('GET','am_farm');
+    } catch(e) {
+      // fallback
+      location.href = game_data.link_base_pure + 'am_farm';
+    }
     return;
   }
 
@@ -207,7 +215,6 @@
 
   function renderPlanTable(plan){
     clearPlanTable();
-    // agrupar por origemCoord
     const groups = {};
     plan.forEach(j=>{
       (groups[j.originCoord] = groups[j.originCoord] || []).push(j);
@@ -238,7 +245,6 @@
 
     Object.keys(groups).forEach(originCoord=>{
       const arr = groups[originCoord];
-      // cabeçalho de origem com botão (apenas visual)
       $tbody.append(`
         <tr>
           <td colspan="4" style="background:#e7d098;">
@@ -259,12 +265,10 @@
       });
     });
 
-    // Injeta antes do widget padrão
     const $anchor = $('#am_widget_Farm').first();
     if ($anchor.length) $anchor.before($wrap);
     else $('body').prepend($wrap);
 
-    // Progress bar
     if (window.UI && UI.InitProgressBars) {
       UI.InitProgressBars();
       if (UI.updateProgressBar) {
@@ -307,6 +311,74 @@
     await $.ajax({ url: form.getAttribute('action'), method:'POST', data: formData });
   }
 
+  // --- NOVO: monta URL base e paginação Farm_page/page, preservando order/dir ---
+  function buildAmFarmBaseUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const order = params.get('order');
+    const dir   = params.get('dir');
+    const extra = (order ? '&order='+encodeURIComponent(order) : '') +
+                  (dir   ? '&dir='+encodeURIComponent(dir)     : '');
+    return TribalWars.buildURL('GET','am_farm') + extra;
+  }
+
+  async function fetchFarms(){
+    const farms = {};
+
+    const base = buildAmFarmBaseUrl();
+
+    // primeira página para detectar paginação e total
+    const firstHtml = await $.ajax({ url: base });
+    const $first = $(firstHtml);
+
+    const hasFarmPage = /[?&]Farm_page=\d+/.test(firstHtml) ||
+                        $first.find('a.paged-nav-item[href*="Farm_page="]').length > 0;
+    const pageParam = hasFarmPage ? 'Farm_page' : 'page';
+
+    // conta páginas
+    const $navRoot = $first.find('#plunder_list_nav').first();
+    let pageCount = 0;
+    if ($navRoot.length) {
+      const items = $navRoot.find('a.paged-nav-item, strong.paged-nav-item');
+      if (items.length) {
+        const lastText = items.last().text().replace(/\D+/g,'');
+        pageCount = Math.max(0, parseInt(lastText,10) || 0);
+      }
+    }
+    if (!pageCount) {
+      const $sel = $first.find('.paged-nav-item').first().closest('td').find('select').first();
+      if ($sel.length) pageCount = Math.max(0, ($sel.find('option').length - 1));
+    }
+
+    function extract($html){
+      $html.find(
+        '#plunder_list tr[id^="village_"], '+
+        '#plunder_list_1 tr[id^="village_"], '+
+        '#plunder_list_2 tr[id^="village_"]'
+      ).each(function(){
+        const $tr = $(this);
+        const id = parseInt(this.id.split('_')[1],10);
+        const coordMatch = ($tr.find('a[href*="screen=report&mode=all&view="]').first().text()||'').match(/\d{1,3}\|\d{1,3}/);
+        if (!coordMatch) return;
+        const coord = coordMatch[0];
+        const dotImg = $tr.find('img[src*="graphic/dots/"]').attr('src')||'';
+        const dot = /dots\/(green|yellow|red|blue|red_blue)/.exec(dotImg)?.[1] || 'green';
+        const hasReport = !!$tr.find('a[href*="screen=report"][href*="view="]').length;
+        farms[coord] = { id, dot, hasReport };
+      });
+    }
+
+    extract($first);
+
+    const sep = base.includes('?') ? '&' : '?';
+    for (let p = 1; p <= pageCount; p++){
+      const url = `${base}${sep}${pageParam}=${p}`;
+      const html = await $.ajax({ url });
+      extract($(html));
+    }
+
+    return farms;
+  }
+
   async function fetchVillages(groupId){
     const data = {};
     const url = TribalWars.buildURL('GET','overview_villages',{ mode:'combined', group: groupId });
@@ -339,29 +411,7 @@
     return data;
   }
 
-  async function fetchFarms(){
-    const farms = {};
-    async function process(page){
-      const html = await $.ajax({url: TribalWars.buildURL('GET','am_farm') + '&page=' + page});
-      const $html = $(html);
-      $html.find('#plunder_list tr[id^="village_"], #plunder_list_1 tr[id^="village_"], #plunder_list_2 tr[id^="village_"]').each(function(){
-        const $tr = $(this);
-        const id = parseInt(this.id.split('_')[1],10);
-        const coord = ($tr.find('a[href*="screen=report&mode=all&view="]').first().text()||'').match(/\d{1,3}\|\d{1,3}/);
-        if (!coord) return;
-        const dotImg = $tr.find('img[src*="graphic/dots/"]').attr('src')||'';
-        const hasReport = !!$tr.find('a[href*="screen=report"][href*="view="]').length;
-        const dot = /dots\/(green|yellow|red|blue|red_blue)/.exec(dotImg)?.[1] || 'green';
-        farms[coord[0]] = { id, dot, hasReport };
-      });
-      const navSel = $html.find('.paged-nav-item').first().closest('td').find('select').first();
-      const navLen = navSel.length>0 ? navSel.find('option').length-1 : $html.find('.paged-nav-item').not('[href*="page=-1"]').length;
-      if (page < navLen) return process(page+1);
-    }
-    await process(0);
-    return farms;
-  }
-
+  // Planejamento por origem
   function planPerOrigin(origins, farms, opts){
     const useUnits = game_data.units.filter(u=>!skipUnits.has(u));
     const need = {};
@@ -429,6 +479,7 @@
     return result;
   }
 
+  // Envio
   async function sendWithTemplateA(targetId, originVillageId){
     return new Promise((resolve, reject) => {
       try{
@@ -490,7 +541,6 @@
           lastSent[job.originId + ':' + job.targetId] = startT;
           saveLast(lastSent);
 
-          // remove linha correspondente da tabela e avança a barra
           $(`#${PLAN_ID} tr.af_plan_row[data-origin="${job.originId}"][data-target="${job.targetId}"]`).remove();
           updateProgressAfterSend();
 
@@ -516,7 +566,6 @@
     if (btnS) btnS.disabled = true;
     if (btnP) btnP.disabled = false;
     status('iniciando...');
-    // limpa tabela antiga se houver
     clearPlanTable();
     const minutes = Math.max(0.2, parseFloat(q('#af_interval').value||'3'));
     await tick();
@@ -535,7 +584,7 @@
   // Boot
   (async function(){
     await ensurePanel(true);
-    if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm v2.1 (BR138) carregado.');
+    if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm v2.2 (BR138) carregado.');
   })();
 
   // API pública
