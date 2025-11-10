@@ -1,19 +1,15 @@
 /* =========================================================
    MASS SCAVENGE (Coleta em Massa) — Sophie "Shinko to Kuma"
-   Versão UNIFICADA + AUTO LOOP (corrigida anti-freeze/anti-flicker)
+   Versão UNIFICADA + AUTO LOOP (anti-freeze/anti-flicker + visor estável)
 
-   O que esta versão faz:
-   - Mantém a UI e lógica originais da Sophie (Calculate → Launch group …)
-   - Adiciona Painel de Loop: ON/OFF, Intervalo base, Atraso aleatório, Delay entre grupos, Rodar agora
-   - Não fica “pisca-pisca”: NUNCA apaga a UI final se ela já existir
-   - Só tenta enviar quando houver botões “Launch group …” reais na UI
+   Regras:
+   - A UI original permanece (Calculate → “Launch group …”)
+   - Painel: ON/OFF, Intervalo base, Atraso aleatório, Delay entre grupos, Rodar agora
+   - “Próxima execução” NÃO pula aleatoriamente (sorteio 1x por ciclo; ticker só exibe)
    - getData() com THROTTLE (15s) + travas anti-reentrância
-   - Só cria grupos se a categoria estiver realmente disponível:
-       * opção desbloqueada
-       * sem squad atual
-       * categoria habilitada pelo usuário
-       * haul > 0
-       * há unidades > 0
+   - Só cria grupos se a categoria estiver realmente disponível
+   - **IMPORTANTE**: o loop SÓ pode iniciar depois de clicar em
+     “Calculate runtimes for each page”. Antes disso, “Iniciar loop” alerta e não liga.
 
    Atalho (Barra rápida):
    javascript:$.getScript('https://niihsan.github.io/tw-scripts/ColetaMA.js?v='+Date.now());
@@ -31,15 +27,22 @@
   };
 
   /* =================== FLAGS / ESTADOS =================== */
-  // Estados com travas anti-reentrância
+  // Estados gerais e anti-reentrância
   var _auto = {
     timer: null,
     sending: false,     // clicando em botões
     loading: false,     // rodando getData()
     observeLock: false, // trava do observer (anti-loop)
-    lastFetchAt: 0      // último getData() (throttle)
+    lastFetchAt: 0,     // último getData() (throttle)
+    nextAt: 0,          // timestamp (ms) do próximo disparo do loop
+    ticker: null        // intervalo que SÓ atualiza o display (sem re-sorteio)
   };
-  const FETCH_THROTTLE_MS = 15000; // não refazer getData() antes de 15s
+  const FETCH_THROTTLE_MS = 15000;
+
+  // Estado funcional
+  var _state = {
+    hasCalculated: false // só fica true após clicar em "Calculate runtimes for each page"
+  };
 
   /* =================== Helpers de armazenamento =================== */
   var LS = {
@@ -60,11 +63,6 @@
   }
   function __finalUI(){ return document.getElementById("massScavengeFinal"); }
   function __finalTable(){ return document.getElementById("massScavengeSophieFinalTable"); }
-  function __sendRows(){
-    var table = __finalTable();
-    if(!table) return [];
-    return Array.from(table.querySelectorAll('tr[id^="sendRow"]'));
-  }
   function __sendButtons(){
     var table = __finalTable();
     if(!table) return [];
@@ -81,7 +79,7 @@
 
   /* =================== Limpeza de UIs antigas =================== */
   $("#massScavengeSophie, #autoScavAddOn").remove();
-  // IMPORTANTE: NÃO removemos a massScavengeFinal aqui (evita flicker após "Calculate")
+  // NÃO removemos a massScavengeFinal aqui (evita flicker após "Calculate")
 
   /* =================== Estado/variáveis originais =================== */
   var serverTimeTemp = $("#serverDate")[0].innerText + " " + $("#serverTime")[0].innerText;
@@ -398,7 +396,10 @@
     localStorage.setItem("sendOrder", JSON.stringify(sendOrder));
     localStorage.setItem("runTimes", JSON.stringify(time));
 
-    // NÃO removemos UI final; apenas busca dados com throttle
+    // Marca que já calculou; só depois disso o loop pode iniciar
+    _state.hasCalculated = true;
+
+    // Busca dados (throttle). Não inicia loop automaticamente — você decide no painel.
     throttledGetData();
   }
 
@@ -408,7 +409,6 @@
     var now = Date.now();
     if (_auto.loading) return;
     if (now - _auto.lastFetchAt < FETCH_THROTTLE_MS) {
-      // já buscou há pouco; se loop estiver ligado, agenda
       if (__loop.enabled()) __loop.schedule();
       return;
     }
@@ -499,7 +499,6 @@
   }
 
   function sendGroup(groupNr, usePremium){
-    // valida existência da linha (pode já ter sido removida)
     var row = document.getElementById("sendRow"+groupNr);
     if (!row) return;
 
@@ -515,7 +514,7 @@
       $(':button[id^="sendMass"],:button[id^="sendMassPremium"]').prop('disabled', false);
     }, 200);
   }
-  window.sendGroup = sendGroup; // garante alcance global para os botões
+  window.sendGroup = sendGroup;
 
   function calculateHaulCategories(data){
     if (!data.has_rally_point) return;
@@ -545,14 +544,12 @@
     haulCategoryRate[3] = (data.options[3].is_locked||data.options[3].scavenging_squad)?0: haul/0.50;
     haulCategoryRate[4] = (data.options[4].is_locked||data.options[4].scavenging_squad)?0: haul/0.75;
 
-    // categorias desativadas pelo usuário
     for (var i=0;i<categoryEnabled.length;i++) if (!categoryEnabled[i]) haulCategoryRate[i+1]=0;
 
     totalHaul = (haulCategoryRate[1]||0)+(haulCategoryRate[2]||0)+(haulCategoryRate[3]||0)+(haulCategoryRate[4]||0);
 
     var unitsReadyForSend = calculateUnitsPerVillage(troopsAllowed);
 
-    // Enfileira somente se realmente der para usar a categoria
     for (var k = 0; k < 4; k++) {
       var optIdx = k + 1;
       var candidate_squad = { "unit_counts": unitsReadyForSend[k]||{}, "carry_max": 9999999999 };
@@ -648,7 +645,7 @@
     return unitsReadyForSend;
   }
 
-  /* =================== Painel e Loop (anti-flicker/anti-freeze) =================== */
+  /* =================== Painel e Loop (visor estável) =================== */
   var __loop = (function(){
     var enabled = lsBool(LS.enabled, AUTO_DEFAULTS.ENABLED);
     var baseMin = lsNum(LS.base, AUTO_DEFAULTS.BASE_MIN);
@@ -663,20 +660,67 @@
       var jitter = Math.floor(Math.random()*(b-a+1))+a;
       return base + jitter;
     }
-    function fmtNext(ms){
-      if(!ms) return "-";
-      var d=new Date(Date.now()+ms), hh=("0"+d.getHours()).slice(-2), mm=("0"+d.getMinutes()).slice(-2);
-      return `${hh}:${mm}`;
+    function updateNextRunDisplay(){
+      try{
+        if (!_auto.nextAt){ $("#nextRun").text("-"); return; }
+        var ms = _auto.nextAt - Date.now();
+        if (ms < 0){ $("#nextRun").text("agora"); return; }
+        var d = new Date(_auto.nextAt),
+            hh = ("0"+d.getHours()).slice(-2),
+            mm = ("0"+d.getMinutes()).slice(-2);
+        $("#nextRun").text(hh+":"+mm);
+      }catch(e){}
     }
+    function startTicker(){
+      if (_auto.ticker) return;
+      _auto.ticker = setInterval(function(){
+        if (!enabled || !_auto.nextAt){ stopTicker(); return; }
+        updateNextRunDisplay();
+      }, 1000);
+    }
+    function stopTicker(){
+      if (_auto.ticker){ clearInterval(_auto.ticker); _auto.ticker = null; }
+    }
+
     function schedule(){
-      if (!enabled){ try{$("#nextRun").text("-");}catch(e){} return; }
-      clearTimeout(_auto.timer);
+      if (!enabled){
+        clearTimeout(_auto.timer); _auto.timer = null;
+        _auto.nextAt = 0;
+        try { $("#nextRun").text("-"); } catch(e){}
+        stopTicker();
+        return;
+      }
+      // Se já há um timer, não re-sorteia; só garante o ticker
+      if (_auto.timer){
+        startTicker();
+        return;
+      }
       var ms = nextDelayMs();
+      _auto.nextAt = Date.now() + ms;
       _auto.timer = setTimeout(runCycleNow, ms);
-      try{$("#nextRun").text(fmtNext(ms));}catch(e){}
+      updateNextRunDisplay();
+      startTicker();
     }
-    function start(){ enabled=true; lsSet(LS.enabled,1); refreshPanel(); schedule(); try{UI.SuccessMessage("Loop iniciado.");}catch(e){} }
-    function stop(){ enabled=false; lsSet(LS.enabled,0); clearTimeout(_auto.timer); try{$("#nextRun").text("-");}catch(e){} refreshPanel(); try{UI.SuccessMessage("Loop parado.");}catch(e){} }
+
+    function start(){
+      if (!_state.hasCalculated){
+        alert('Antes de iniciar o loop, clique em "Calculate runtimes for each page".');
+        return;
+      }
+      enabled = true; lsSet(LS.enabled,1);
+      refreshPanel();
+      schedule();
+      try{ UI.SuccessMessage("Loop iniciado."); }catch(e){}
+    }
+    function stop(){
+      enabled = false; lsSet(LS.enabled,0);
+      clearTimeout(_auto.timer); _auto.timer = null;
+      _auto.nextAt = 0;
+      try { $("#nextRun").text("-"); } catch(e){}
+      stopTicker();
+      refreshPanel();
+      try{ UI.SuccessMessage("Loop parado."); }catch(e){}
+    }
     function enabledGetter(){ return enabled; }
 
     function setBase(v){ baseMin=v; lsSet(LS.base,v); refreshPanel(); schedule(); }
@@ -693,7 +737,6 @@
       }catch(e){}
     }
 
-    // CLICA SOMENTE SE EXISTEM BOTÕES REAIS; SENÃO, agenda e sai
     function autoSendAllGroups(){
       if (!enabled) return;
       if (_auto.sending) return;
@@ -718,17 +761,14 @@
       step();
     }
 
-    // NÃO destrói/recria a UI se ela já existe.
     function runCycleNow(){
+      // Permitir “Rodar agora” manual mesmo sem loop ligado, mas sem flood
       if (!enabled){
-        // Permite rodar uma vez manualmente (“Rodar agora”) sem flood
         return throttledGetData();
       }
       if (__finalUI()){
-        // Já tem UI com “Launch group …”: tenta enviar
         return autoSendAllGroups();
       }
-      // Não tem UI final -> tenta construir com dados (throttle)
       throttledGetData();
     }
 
@@ -784,7 +824,13 @@
 
     refreshPanel();
 
-    return { enabled: enabledGetter, autoSendAllGroups, schedule, runNow:runCycleNow };
+    return {
+      enabled: enabledGetter,
+      autoSendAllGroups,
+      schedule,
+      runNow: runCycleNow,
+      start, stop
+    };
   })();
 
   /* =================== MutationObserver SEGURO (anti-loop) =================== */
