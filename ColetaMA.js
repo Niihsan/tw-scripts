@@ -1,13 +1,19 @@
 /* =========================================================
    MASS SCAVENGE (Coleta em Massa) — Sophie "Shinko to Kuma"
-   Versão UNIFICADA + AUTO LOOP (corrigida anti-flood e anti-flicker)
+   Versão UNIFICADA + AUTO LOOP (corrigida anti-freeze/anti-flicker)
 
-   Correções:
-   - Loop não remove/fecha a UI final; só reconstrói se ela não existir
-   - Auto-Envio clica os botões "Launch group" presentes (seleção por DOM)
-   - Só cria/enfileira grupos quando a categoria está realmente disponível
-     (não bloqueada, sem squad, categoria habilitada, haul>0 e há unidades)
-   - Se nada estiver disponível, agenda próximo ciclo e sai (sem spam)
+   O que esta versão faz:
+   - Mantém a UI e lógica originais da Sophie (Calculate → Launch group …)
+   - Adiciona Painel de Loop: ON/OFF, Intervalo base, Atraso aleatório, Delay entre grupos, Rodar agora
+   - Não fica “pisca-pisca”: NUNCA apaga a UI final se ela já existir
+   - Só tenta enviar quando houver botões “Launch group …” reais na UI
+   - getData() com THROTTLE (15s) + travas anti-reentrância
+   - Só cria grupos se a categoria estiver realmente disponível:
+       * opção desbloqueada
+       * sem squad atual
+       * categoria habilitada pelo usuário
+       * haul > 0
+       * há unidades > 0
 
    Atalho (Barra rápida):
    javascript:$.getScript('https://niihsan.github.io/tw-scripts/ColetaMA.js?v='+Date.now());
@@ -23,7 +29,17 @@
     JITTER_MAX: 5,          // atraso aleatório máximo (min)
     GROUP_DELAY_MS: 400     // delay entre cliques de "Launch group" (ms)
   };
-  var _auto = {timer:null, sending:false, loading:false};
+
+  /* =================== FLAGS / ESTADOS =================== */
+  // Estados com travas anti-reentrância
+  var _auto = {
+    timer: null,
+    sending: false,     // clicando em botões
+    loading: false,     // rodando getData()
+    observeLock: false, // trava do observer (anti-loop)
+    lastFetchAt: 0      // último getData() (throttle)
+  };
+  const FETCH_THROTTLE_MS = 15000; // não refazer getData() antes de 15s
 
   /* =================== Helpers de armazenamento =================== */
   var LS = {
@@ -37,7 +53,7 @@
   function lsBool(k,d){ var v=localStorage.getItem(k); if(v==null) return d; return v==='1' || v===true || v==='true'; }
   function lsSet(k,v){ localStorage.setItem(k,String(v)); }
 
-  /* =================== Checagens rápidas =================== */
+  /* =================== Checagens rápidas / DOM =================== */
   function __hasUnits(unitCounts){
     for (var k in unitCounts){ if (!unitCounts.hasOwnProperty(k)) continue; if (Number(unitCounts[k]) > 0) return true; }
     return false;
@@ -45,7 +61,6 @@
   function __finalUI(){ return document.getElementById("massScavengeFinal"); }
   function __finalTable(){ return document.getElementById("massScavengeSophieFinalTable"); }
   function __sendRows(){
-    // linhas que possuem botão Launch group
     var table = __finalTable();
     if(!table) return [];
     return Array.from(table.querySelectorAll('tr[id^="sendRow"]'));
@@ -53,7 +68,6 @@
   function __sendButtons(){
     var table = __finalTable();
     if(!table) return [];
-    // botão padrão (não premium)
     return Array.from(table.querySelectorAll('input.btnSophie[onclick^="sendGroup("]'));
   }
 
@@ -67,7 +81,7 @@
 
   /* =================== Limpeza de UIs antigas =================== */
   $("#massScavengeSophie, #autoScavAddOn").remove();
-  // NÃO removemos a massScavengeFinal aqui para evitar flicker quando o usuário apertar "Calculate"
+  // IMPORTANTE: NÃO removemos a massScavengeFinal aqui (evita flicker após "Calculate")
 
   /* =================== Estado/variáveis originais =================== */
   var serverTimeTemp = $("#serverDate")[0].innerText + " " + $("#serverTime")[0].innerText;
@@ -77,25 +91,13 @@
 
   if (typeof window.version === 'undefined') window.version = "new";
 
-  var langShinko = [
-    "Mass scavenging",
-    "Select unit types/ORDER to scavenge with (drag units to order)",
-    "Select categories to use",
-    "When do you want your scav runs to return (approximately)?",
-    "Runtime here",
-    "Calculate runtimes for each page",
-    "Creator: ",
-    "Mass scavenging: send per 50 villages",
-    "Launch group "
-  ];
-
   function __allTroopsDisabled(obj){ for (var k in obj){ if (obj.hasOwnProperty(k) && obj[k]) return false; } return true; }
 
   var troopTypeEnabled = JSON.parse(localStorage.getItem("troopTypeEnabled")||"null");
   if (!troopTypeEnabled){
     troopTypeEnabled = {};
     (game_data.units||[]).forEach(u=>{
-      if (!/^(militia|snob|ram|catapult|spy|knight)$/.test(u)) troopTypeEnabled[u]=true; // habilita por padrão
+      if (!/^(militia|snob|ram|catapult|spy|knight)$/.test(u)) troopTypeEnabled[u]=true;
     });
     localStorage.setItem("troopTypeEnabled", JSON.stringify(troopTypeEnabled));
   } else if (__allTroopsDisabled(troopTypeEnabled)) {
@@ -111,29 +113,28 @@
 
   var prioritiseHighCat = JSON.parse(localStorage.getItem("prioritiseHighCat")||"false");
   var timeElement = localStorage.getItem("timeElement") || "Hours";
+
   var sendOrder = JSON.parse(localStorage.getItem("sendOrder")||"null");
   if (!sendOrder){
     sendOrder = (game_data.units||[]).filter(u=>!/^(militia|snob|ram|catapult|spy|knight)$/.test(u));
     localStorage.setItem("sendOrder", JSON.stringify(sendOrder));
   }
-  var runTimes = JSON.parse(localStorage.getItem("runTimes")||'{"off":4,"def":3}');
 
+  var runTimes = JSON.parse(localStorage.getItem("runTimes")||'{"off":4,"def":3}');
   if (typeof window.premiumBtnEnabled === 'undefined') window.premiumBtnEnabled = false;
 
   var URLReq = (game_data.player && game_data.player.sitter>0)
     ? `game.php?t=${game_data.player.id}&screen=place&mode=scavenge_mass`
     : `game.php?&screen=place&mode=scavenge_mass`;
 
-  var arrayWithData, enabledCategories=[], availableUnits=[];
-  var squad_requests=[], squad_requests_premium=[];
+  var arrayWithData, enabledCategories=[], squad_requests=[], squad_requests_premium=[];
   var duration_factor=0, duration_exponent=0, duration_initial_seconds=0;
   var scavengeInfo;
+  var time = {off:0, def:0};
 
-  // Pega nomes de categoria da página atual
+  // Nomes de categoria da página atual
   var scScript = $.find('script:contains("ScavengeMassScreen")')[0];
   var categoryNames = JSON.parse("[" + scScript.innerHTML.match(/\{.*\:\{.*\:.*\}\}/g) + "]")[0];
-
-  var time = {off:0, def:0};
 
   /* =================== Estilos =================== */
   var backgroundColor="#36393f", borderColor="#3e4147", headerColor="#202225", titleColor="#ffffdf";
@@ -189,11 +190,11 @@
     <table class="vis" border="1" style="width: 100%;background-color:${backgroundColor};border-color:${borderColor}">
       <tr>
         <td colspan="10" style="text-align:center;background-color:${headerColor}">
-          <h3><center style="margin:10px"><u><font color="${titleColor}">${"Mass scavenging"}</font></u></center></h3>
+          <h3><center style="margin:10px"><u><font color="${titleColor}">Mass scavenging</font></u></center></h3>
         </td>
       </tr>
       <tr><td style="text-align:center;background-color:${headerColor}" colspan="15">
-        <h3><center style="margin:10px"><u><font color="${titleColor}">${"Select unit types/ORDER to scavenge with (drag units to order)"}</font></u></center></h3>
+        <h3><center style="margin:10px"><u><font color="${titleColor}">Select unit types/ORDER to scavenge with (drag units to order)</font></u></center></h3>
       </td></tr>
       <tr id="imgRow"></tr>
     </table>
@@ -201,7 +202,7 @@
     <table class="vis" border="1" style="width:100%;background-color:${backgroundColor};border-color:${borderColor}">
       <tbody>
         <tr><td style="text-align:center;background-color:${headerColor}" colspan="4">
-          <h3><center style="margin:10px"><u><font color="${titleColor}">${"Select categories to use"}</font></u></center></h3>
+          <h3><center style="margin:10px"><u><font color="${titleColor}">Select categories to use</font></u></center></h3>
         </td></tr>
         <tr id="categories" style="text-align:center;background-color:${headerColor}">
           <td style="padding:10px;"><font color="${titleColor}">${categoryNames[1].name}</font></td>
@@ -220,7 +221,7 @@
     <hr>
     <table class="vis" border="1" style="width:100%;background-color:${backgroundColor};border-color:${borderColor}">
       <tr><td colspan="3" style="text-align:center;background-color:${headerColor}">
-        <center style="margin:10px"><font color="${titleColor}">${"When do you want your scav runs to return (approximately)?"}</font></center>
+        <center style="margin:10px"><font color="${titleColor}">When do you want your scav runs to return (approximately)?</font></center>
       </td></tr>
       <tr id="runtimes" style="text-align:center;background-color:${headerColor}">
         <td style="background-color:${headerColor};"></td>
@@ -261,7 +262,7 @@
       </tr>
     </table>
     <hr>
-    <center><input type="button" class="btn btnSophie" id="sendMass" value="${"Calculate runtimes for each page"}"></center>
+    <center><input type="button" class="btn btnSophie" id="sendMass" value="Calculate runtimes for each page"></center>
     <hr>
   </div>`;
     $(".maincell,#mobileContent").eq(0).prepend(html);
@@ -357,7 +358,7 @@
   function closeWindow(id){ $("#"+id).remove(); }
   function settings(){ alert("coming soon!"); }
 
-  /* =================== Fluxo de cálculo/envio =================== */
+  /* =================== Fluxo de cálculo/envio (original + filtros) =================== */
   var squads={}, squads_premium={};
   var totalLoot=0,totalHaul=0,haulCategoryRate={};
 
@@ -397,13 +398,26 @@
     localStorage.setItem("sendOrder", JSON.stringify(sendOrder));
     localStorage.setItem("runTimes", JSON.stringify(time));
 
-    // Importante: não removemos a UI final; deixamos o fluxo seguir
-    getData();
+    // NÃO removemos UI final; apenas busca dados com throttle
+    throttledGetData();
   }
 
   var URLReqBase = URLReq;
+
+  function throttledGetData(){
+    var now = Date.now();
+    if (_auto.loading) return;
+    if (now - _auto.lastFetchAt < FETCH_THROTTLE_MS) {
+      // já buscou há pouco; se loop estiver ligado, agenda
+      if (__loop.enabled()) __loop.schedule();
+      return;
+    }
+    _auto.lastFetchAt = now;
+    getData();
+  }
+
   function getData(){
-    if (_auto.loading) return;      // evita chamadas concorrentes
+    if (_auto.loading) return;
     _auto.loading = true;
 
     var URLs=[];
@@ -449,19 +463,19 @@
           if (totalGroups === 0 || empty) {
             _auto.loading = false;
             if (__loop.enabled()) {
-              UI.InfoMessage("Sem coletas disponíveis. Checarei novamente no próximo intervalo.");
+              try{ UI.InfoMessage("Sem coletas disponíveis. Checarei novamente no próximo intervalo."); }catch(e){}
               __loop.schedule();
             }
             return;
           }
 
-          // Se UI final já existe, não recria (evita flicker)
+          // Se UI final já existe, NÃO recria (evita flicker)
           if (!__finalUI()){
             var html = `<div id="massScavengeFinal" class="ui-widget-content" style="position:fixed;background-color:${backgroundColor};cursor:move;z-index:50;">
-            <button class="btn" id="x" onclick="(function(e){ var n=document.getElementById('massScavengeFinal'); if(n) n.remove(); })(event)">X</button>
+            <button class="btn" id="x" onclick="(function(){ var n=document.getElementById('massScavengeFinal'); if(n) n.remove(); })()">X</button>
             <table id="massScavengeSophieFinalTable" class="vis" border="1" style="width:100%;background-color:${backgroundColor};border-color:${borderColor}">
               <tr><td colspan="10" style="text-align:center;background-color:${headerColor}">
-                <h3><center style="margin:10px"><u><font color="${titleColor}">${"Mass scavenging: send per 50 villages"}</font></u></center></h3>
+                <h3><center style="margin:10px"><u><font color="${titleColor}">Mass scavenging: send per 50 villages</font></u></center></h3>
               </td></tr>`;
             for (var s=0; s<Object.keys(squads).length; s++){
               html += `<tr id="sendRow${s}" style="text-align:center;background-color:${backgroundColor}">
@@ -494,14 +508,13 @@
 
     $(':button[id^="sendMass"],:button[id^="sendMassPremium"]').prop('disabled', true);
     TribalWars.post('scavenge_api',{ajaxaction:'send_squads'},{ "squad_requests": temp }, function () {
-      UI.SuccessMessage("Group sent successfully");
+      try{ UI.SuccessMessage("Group sent successfully"); }catch(e){}
     }, !1);
     setTimeout(function(){
       $(`#sendRow${groupNr}`).remove();
       $(':button[id^="sendMass"],:button[id^="sendMassPremium"]').prop('disabled', false);
     }, 200);
   }
-
   window.sendGroup = sendGroup; // garante alcance global para os botões
 
   function calculateHaulCategories(data){
@@ -635,7 +648,7 @@
     return unitsReadyForSend;
   }
 
-  /* =================== Painel e Loop =================== */
+  /* =================== Painel e Loop (anti-flicker/anti-freeze) =================== */
   var __loop = (function(){
     var enabled = lsBool(LS.enabled, AUTO_DEFAULTS.ENABLED);
     var baseMin = lsNum(LS.base, AUTO_DEFAULTS.BASE_MIN);
@@ -644,9 +657,9 @@
     var gDelay = lsNum(LS.gdelay, AUTO_DEFAULTS.GROUP_DELAY_MS);
 
     function nextDelayMs(){
-      var base = Math.max(1, baseMin)*60_000;
-      var a = Math.max(0, jMin)*60_000;
-      var b = Math.max(a, jMax)*60_000;
+      var base = Math.max(1, baseMin)*60000;
+      var a = Math.max(0, jMin)*60000;
+      var b = Math.max(a, jMax)*60000;
       var jitter = Math.floor(Math.random()*(b-a+1))+a;
       return base + jitter;
     }
@@ -656,14 +669,14 @@
       return `${hh}:${mm}`;
     }
     function schedule(){
-      if (!enabled){ $("#nextRun").text("-"); return; }
+      if (!enabled){ try{$("#nextRun").text("-");}catch(e){} return; }
       clearTimeout(_auto.timer);
       var ms = nextDelayMs();
       _auto.timer = setTimeout(runCycleNow, ms);
-      $("#nextRun").text(fmtNext(ms));
+      try{$("#nextRun").text(fmtNext(ms));}catch(e){}
     }
-    function start(){ enabled=true; lsSet(LS.enabled,1); refreshPanel(); schedule(); UI.SuccessMessage("Loop iniciado."); }
-    function stop(){ enabled=false; lsSet(LS.enabled,0); clearTimeout(_auto.timer); $("#nextRun").text("-"); refreshPanel(); UI.SuccessMessage("Loop parado."); }
+    function start(){ enabled=true; lsSet(LS.enabled,1); refreshPanel(); schedule(); try{UI.SuccessMessage("Loop iniciado.");}catch(e){} }
+    function stop(){ enabled=false; lsSet(LS.enabled,0); clearTimeout(_auto.timer); try{$("#nextRun").text("-");}catch(e){} refreshPanel(); try{UI.SuccessMessage("Loop parado.");}catch(e){} }
     function enabledGetter(){ return enabled; }
 
     function setBase(v){ baseMin=v; lsSet(LS.base,v); refreshPanel(); schedule(); }
@@ -671,50 +684,52 @@
     function setGDelay(ms){ gDelay=ms; lsSet(LS.gdelay,ms); refreshPanel(); }
 
     function refreshPanel(){
-      $("#loopState").text(enabled?"ON":"OFF");
-      $("#baseVal").text(baseMin);
-      $("#jitterVal").text(`${jMin}..${jMax}`);
-      $("#delayVal").text(gDelay);
-      $("#btnToggleLoop").text(enabled?"Parar loop":"Iniciar loop");
+      try{
+        $("#loopState").text(enabled?"ON":"OFF");
+        $("#baseVal").text(baseMin);
+        $("#jitterVal").text(`${jMin}..${jMax}`);
+        $("#delayVal").text(gDelay);
+        $("#btnToggleLoop").text(enabled?"Parar loop":"Iniciar loop");
+      }catch(e){}
     }
 
+    // CLICA SOMENTE SE EXISTEM BOTÕES REAIS; SENÃO, agenda e sai
     function autoSendAllGroups(){
+      if (!enabled) return;
       if (_auto.sending) return;
 
-      // Se UI final não existe, primeiro tenta construir
-      if (!__finalUI()){
-        getData();
-        return;
-      }
+      var table = __finalTable();
+      if (!table){ schedule(); return; }
 
       var btns = __sendButtons();
-      if (!btns.length){
-        // Sem botões para clicar -> agenda próxima checagem
-        schedule();
-        return;
-      }
+      if (!btns.length){ schedule(); return; }
 
       _auto.sending = true;
-      var idx=0;
-      (function step(){
-        btns = __sendButtons(); // re-coleta a cada passo
+      var step = function(){
+        btns = __sendButtons();
         if (!btns.length){
-          _auto.sending=false;
+          _auto.sending = false;
           schedule();
           return;
         }
-        try { btns[0].click(); } catch(e){}
+        try{ btns[0].click(); }catch(e){}
         setTimeout(step, Math.max(150, gDelay));
-      })();
+      };
+      step();
     }
 
+    // NÃO destrói/recria a UI se ela já existe.
     function runCycleNow(){
-      // NÃO remove a UI final; evita flicker com o "Calculate" do original
-      if (!__finalUI()) {
-        getData();       // constrói / atualiza dados e UI
-      } else {
-        autoSendAllGroups(); // se já tem UI, tenta enviar o que tem
+      if (!enabled){
+        // Permite rodar uma vez manualmente (“Rodar agora”) sem flood
+        return throttledGetData();
       }
+      if (__finalUI()){
+        // Já tem UI com “Launch group …”: tenta enviar
+        return autoSendAllGroups();
+      }
+      // Não tem UI final -> tenta construir com dados (throttle)
+      throttledGetData();
     }
 
     // Painel
@@ -769,24 +784,26 @@
 
     refreshPanel();
 
-    // Observa quando a UI final surge para tentar auto-enviar
-    new MutationObserver(()=>{
-      if (__finalUI() && enabled){
-        autoSendAllGroups();
-      }
-    }).observe(document.body, {childList:true,subtree:true});
-
     return { enabled: enabledGetter, autoSendAllGroups, schedule, runNow:runCycleNow };
   })();
 
-  /* =================== Inicialização =================== */
-  // se já existir UI final (ex.: usuário acabou de clicar Calculate), não apaga.
-  // Somente constrói a UI base de configuração (superior).
-  buildBaseUI();
+  /* =================== MutationObserver SEGURO (anti-loop) =================== */
+  var __mo;
+  try { if (__mo) __mo.disconnect(); } catch(e){}
+  __mo = new MutationObserver(function(){
+    if (_auto.observeLock) return;
+    _auto.observeLock = true;
+    setTimeout(function(){
+      _auto.observeLock = false;
+      if (__loop.enabled() && __finalUI()) {
+        __loop.autoSendAllGroups();
+      }
+    }, 250);
+  });
+  __mo.observe(document.body, {childList:true, subtree:true});
 
-  // Atualiza displays iniciais
+  /* =================== Inicialização =================== */
+  buildBaseUI();
   $("#offDisplay").text(fancyTimeFormat(runTimes.off*3600));
   $("#defDisplay").text(fancyTimeFormat(runTimes.def*3600));
-
-  // Se o usuário quiser, pode ligar o loop no painel
 })();
