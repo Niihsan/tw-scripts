@@ -1,5 +1,4 @@
-  
-/* AutoFarm.js – BR138 – Versão 2.2 (com patch “1 ataque por alvo”)
+/* AutoFarm.js – BR138 – Versão 2.2 (com patch “1 ataque por alvo global”)
  * - Redireciona para screen=am_farm se não estiver na página do Assistente de Saque
  * - Multi-origem por GRUPO, ordenado por distância
  * - Proteção por combo (origem+alvo) em minutos
@@ -49,6 +48,12 @@
   function loadLast(){ try{return JSON.parse(localStorage.getItem(LAST_KEY)||'{}');}catch(_){return {}} }
   function saveLast(m){ try{localStorage.setItem(LAST_KEY,JSON.stringify(m));}catch(_){} }
   let lastSent = loadLast();
+
+  // 🔥 NOVO: proteção GLOBAL por alvo (independente da origem)
+  const LAST_KEY_GLOBAL = 'AF_lastSent_GLOBAL_v2';
+  function loadLastGlobal(){ try{return JSON.parse(localStorage.getItem(LAST_KEY_GLOBAL)||'{}');}catch(_){return {}} }
+  function saveLastGlobal(m){ try{localStorage.setItem(LAST_KEY_GLOBAL,JSON.stringify(m));}catch(_){} }
+  let lastSentGlobal = loadLastGlobal();
 
   let running = false;
   let timer   = null;
@@ -442,9 +447,9 @@
   }
 
   // --------------- A PARTIR DAQUI VEM A FUNÇÃO planPerOrigin (com o patch) ---------------
-
-// ⭐ ESTA É A ÚNICA FUNÇÃO ALTERADA EM RELAÇÃO AO v2.2 ORIGINAL ⭐
-  // Aqui entra o patch: "cada alvo só pode ser atacado por UMA origem por ciclo"
+  // ⭐ ESTA É A ÚNICA FUNÇÃO ALTERADA EM RELAÇÃO AO v2.2 ORIGINAL ⭐
+  // Patch: 1) evita múltiplas origens no MESMO ciclo (usedTargets)
+  //        2) bloqueio GLOBAL por alvo via lastSentGlobal + gapSec
   function planPerOrigin(origins, farms, opts){
     const useUnits = game_data.units.filter(u=>!skipUnits.has(u));
 
@@ -452,15 +457,15 @@
     useUnits.forEach(u=>{
       const cb   = q(`.af_cb[data-u="${u}"]`);
       const qtyEl= q(`.af_qty[data-u="${u}"]`);
-      need[u] = (cb && cb.checked) ? Math.max(0, parseInt(qtyEl.value||'0',10)||0) : 0;
+      need[u] = (cb && cb.checked) ? Math.max(0, parseInt(qtyEl.value||'0',10) || 0) : 0;
     });
 
     const { maxFields, onlyKnown, noLosses, gapSec, batch } = opts;
     const nowS   = nowSec();
     const result = [];
 
-    // PATCH: impede multi-origem no mesmo alvo
-    const usedTargets = new Set();  // armazena IDs de alvo já escolhidos no ciclo
+    // Impede que duas ou mais origens ataquem o MESMO alvo no mesmo ciclo
+    const usedTargets = new Set();  // ids de alvo usados neste tick()
 
     Object.keys(origins).forEach(coordOrigin=>{
       const org = origins[coordOrigin];
@@ -514,14 +519,19 @@
         if (onlyKnown && !f.hasReport) continue;
         if (it.d > maxFields) continue;
 
-        // PATCH: se esse alvo já foi escolhido por outra origem neste ciclo, pula
+        // 1) bloqueio GLOBAL: se alvo já foi atacado há menos que gapSec, pula
+        const lastG = lastSentGlobal[f.id] ? Number(lastSentGlobal[f.id]) : 0;
+        if (lastG && (nowS - lastG) < gapSec) continue;
+
+        // 2) se alvo já foi escolhido neste ciclo por outra origem, pula
         if (usedTargets.has(f.id)) continue;
 
-        const key  = org.id + ':' + f.id;
-        const last = lastSent[key] ? Number(lastSent[key]) : 0;
-        if (last && (nowS - last) < gapSec) continue;
+        // bloqueio original por combo (origem+alvo) ainda é preservado
+        const keyCombo  = org.id + ':' + f.id;
+        const lastCombo = lastSent[keyCombo] ? Number(lastSent[keyCombo]) : 0;
+        if (lastCombo && (nowS - lastCombo) < gapSec) continue;
 
-        // marca o alvo como usado globalmente no ciclo
+        // marca o alvo como usado globalmente neste ciclo
         usedTargets.add(f.id);
 
         // registra o envio
@@ -618,8 +628,14 @@
         status(`enviando ${sent+1}/${plan.length} (origem ${job.originCoord} → alvo ${job.targetCoord})`);
         try{
           await sendWithTemplateA(job.targetId, job.originId);
+
+          // Mantém o comportamento original (combo origem+alvo)…
           lastSent[job.originId + ':' + job.targetId] = startT;
           saveLast(lastSent);
+
+          // …e adiciona proteção GLOBAL por alvo
+          lastSentGlobal[job.targetId] = startT;
+          saveLastGlobal(lastSentGlobal);
 
           $(`#${PLAN_ID} tr.af_plan_row[data-origin="${job.originId}"][data-target="${job.targetId}"]`).remove();
           updateProgressAfterSend();
