@@ -1,3 +1,4 @@
+  
 /* AutoFarm.js – BR138 – Versão 2.2 (com patch “1 ataque por alvo”)
  * - Redireciona para screen=am_farm se não estiver na página do Assistente de Saque
  * - Multi-origem por GRUPO, ordenado por distância
@@ -441,7 +442,8 @@
   }
 
   // --------------- A PARTIR DAQUI VEM A FUNÇÃO planPerOrigin (com o patch) ---------------
-  // ⭐ ESTA É A ÚNICA FUNÇÃO ALTERADA EM RELAÇÃO AO v2.2 ORIGINAL ⭐
+
+// ⭐ ESTA É A ÚNICA FUNÇÃO ALTERADA EM RELAÇÃO AO v2.2 ORIGINAL ⭐
   // Aqui entra o patch: "cada alvo só pode ser atacado por UMA origem por ciclo"
   function planPerOrigin(origins, farms, opts){
     const useUnits = game_data.units.filter(u=>!skipUnits.has(u));
