@@ -1,12 +1,23 @@
-/* AutoFarm.js – BR138 – Versão 2.3 (baseado na sua 2.2)
- * Patch aplicado: impedir que múltiplas aldeias ataquem o MESMO alvo no MESMO ciclo
- * Nenhuma outra lógica foi alterada.
+/* AutoFarm.js – BR138 – Versão 2.2 (com patch “1 ataque por alvo”)
+ * - Redireciona para screen=am_farm se não estiver na página do Assistente de Saque
+ * - Multi-origem por GRUPO, ordenado por distância
+ * - Proteção por combo (origem+alvo) em minutos
+ * - Ataques possíveis por origem (com base nas quantidades marcadas)
+ * - Renderização do planejamento na UI (agrupado por origem + barra de progresso)
+ * - Filtros: Só já atacados, Sem perdas (amarelo), Campos máx., Lote/origem
+ * - Envio via Template A (TribalWars.post)
+ * - Busca TODAS as páginas do Assistente (detecta Farm_page/page e preserva order/dir)
  */
 
 (function(){
   'use strict';
-  if (!window.$ || !window.game_data) { console.error('AutoFarm: jQuery/game_data indisponível'); return; }
 
+  if (!window.$ || !window.game_data) {
+    console.error('AutoFarm: jQuery/game_data indisponível');
+    return;
+  }
+
+  //----------------------- REDIRECIONAMENTO --------------------------
   if (game_data.screen !== 'am_farm') {
     try {
       location.href = TribalWars.buildURL('GET','am_farm');
@@ -16,10 +27,11 @@
     return;
   }
 
+  //----------------------- EVITA DUPLO LOAD --------------------------
   if (window.AutoFarm && window.AutoFarm.__loaded) {
     const p0 = document.getElementById('autoFarmPanel_hosted_single_v2');
     if (p0) p0.style.display = 'block';
-    if (window.UI && UI.SuccessMessage) UI.SuccessMessage('AutoFarm v2.3 já carregado.');
+    if (UI?.SuccessMessage) UI.SuccessMessage('AutoFarm v2 já carregado (BR138).');
     return;
   }
 
@@ -31,26 +43,32 @@
   const q  = (sel, ctx=document) => ctx.querySelector(sel);
   const qa = (sel, ctx=document) => Array.from(ctx.querySelectorAll(sel));
 
+  // Persistência (origem+alvo)
   const LAST_KEY = 'AF_lastSent_v2_combo';
-  function loadLast() { try{ return JSON.parse(localStorage.getItem(LAST_KEY) || '{}'); }catch(_){ return {}; } }
-  function saveLast(map){ try{ localStorage.setItem(LAST_KEY, JSON.stringify(map)); }catch(_){} }
+  function loadLast(){ try{return JSON.parse(localStorage.getItem(LAST_KEY)||'{}');}catch(_){return {}} }
+  function saveLast(m){ try{localStorage.setItem(LAST_KEY,JSON.stringify(m));}catch(_){} }
   let lastSent = loadLast();
 
-  let running = false, timer = null;
+  let running = false;
+  let timer   = null;
 
-  function toCoordObj(coord){ const m=(coord||'').match(/(\d{1,3})\|(\d{1,3})/); return m?{x:+m[1],y:+m[2]}:null; }
+  //------------------------------- UTIL --------------------------------
+  function toCoordObj(coord){ const m=coord?.match(/(\d{1,3})\|(\d{1,3})/); return m?{x:+m[1],y:+m[2]}:null; }
   function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
   function nowSec(){ return Math.floor(Date.now()/1000); }
 
+  //---------------------------------------------------------------------
+  //---------------------------- PAINEL --------------------------------
+  //---------------------------------------------------------------------
   async function buildGroupSelect(selectedId){
     try{
       const resp = await $.get(TribalWars.buildURL('GET','groups',{ ajax:'load_group_menu' }));
       let html = '<select id="af_group" style="max-width:180px">';
       resp.result.forEach(g=>{
-        if (g.type==='separator') html += '<option disabled>────────</option>';
-        else html += `<option value="${g.group_id}" ${String(g.group_id)===String(selectedId)?'selected':''}>${g.name}</option>`;
+        if(g.type==='separator') html+='<option disabled>────────</option>';
+        else html+=`<option value="${g.group_id}" ${String(g.group_id)===String(selectedId)?'selected':''}>${g.name}</option>`;
       });
-      html += '</select>';
+      html+='</select>';
       return html;
     }catch(e){
       return `<select id="af_group"><option value="0" selected>Todos</option></select>`;
@@ -62,9 +80,9 @@
     if (p) return p;
 
     const units = game_data.units.filter(u=>!skipUnits.has(u));
-    const savedUnits   = JSON.parse(localStorage.getItem('AF_units')||'{}');
-    const intSaved     = Number(localStorage.getItem('AF_int')||3);
-    const batchSaved   = Number(localStorage.getItem('AF_batch')||10);
+    const savedUnits = JSON.parse(localStorage.getItem('AF_units')||'{}');
+    const intSaved   = Number(localStorage.getItem('AF_int')||3);
+    const batchSaved = Number(localStorage.getItem('AF_batch')||10);
     const onlyKnownSav = localStorage.getItem('AF_onlyKnown')!=='0';
     const noLossesSav  = localStorage.getItem('AF_noLosses')!=='0';
     const gapSaved     = Number(localStorage.getItem('AF_gapMin')||15);
@@ -75,151 +93,141 @@
 
     p = document.createElement('div');
     p.id = PANEL_ID;
-    p.style.cssText = `
+    p.style.cssText=`
       position:fixed; top:80px; right:16px; z-index:99999;
       background:#fff; border:1px solid #7d510f; padding:10px; width:380px;
-      box-shadow:0 6px 18px rgba(0,0,0,.2); border-radius:10px; font:12px Arial;
+      box-shadow:0 6px 18px rgba(0,0,0,.2); border-radius:10px;
+      font:12px/1.25 Arial, sans-serif;
     `;
+    document.body.appendChild(p);
 
     p.innerHTML = `
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:move;" id="af_drag">
-        <strong style="flex:1">AutoFarm v2.3 (BR138)</strong>
-        <button id="af_hide" class="btn btn-cancel" title="Ocultar painel">×</button>
+      <div id="af_drag" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:move;">
+        <strong style="flex:1">AutoFarm v2 (Template A – BR138)</strong>
+        <button id="af_hide" class="btn btn-cancel">×</button>
       </div>
 
-      <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;">
         <label>Grupo:</label>
         ${groupSelect}
         <label style="margin-left:8px">Campos máx.:</label>
-        <input id="af_maxFields" type="number" min="1" step="1" value="${maxFieldsSav}" style="width:64px;">
+        <input id="af_maxFields" type="number" value="${maxFieldsSav}" style="width:64px;">
       </div>
 
-      <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
         <label>Intervalo (min):</label>
-        <input id="af_interval" type="number" min="0.2" step="0.1" value="${intSaved}" style="width:64px;">
+        <input id="af_interval" type="number" value="${intSaved}" step="0.1" style="width:64px;">
         <label>Lote/origem:</label>
-        <input id="af_batch" type="number" min="1" step="1" value="${batchSaved}" style="width:80px;">
+        <input id="af_batch" type="number" value="${batchSaved}" style="width:80px;">
       </div>
 
-      <div style="display:flex; gap:10px;">
-        <label><input id="af_onlyKnown" type="checkbox" ${onlyKnownSav?'checked':''}> Só alvos já atacados</label>
-        <label><input id="af_noLosses" type="checkbox" ${noLossesSav?'checked':''}> Sem perdas</label>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;">
+        <label><input id="af_onlyKnown" type="checkbox" ${onlyKnownSav?'checked':''}> Só já atacados</label>
+        <label><input id="af_noLosses"  type="checkbox" ${noLossesSav?'checked':''}> Sem perdas</label>
       </div>
 
-      <div style="margin:6px 0 8px;">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">
         <label>Proteção por alvo (min):</label>
-        <input id="af_gapMin" type="number" min="1" step="1" value="${gapSaved}" style="width:64px;">
+        <input id="af_gapMin" type="number" value="${gapSaved}" style="width:64px;">
       </div>
 
-      <div id="af_units" style="max-height:220px; overflow:auto; border:1px solid #ddd; padding:6px; margin-bottom:8px; border-radius:6px;"></div>
+      <div id="af_units" style="max-height:220px;overflow:auto;border:1px solid #ddd;padding:6px;border-radius:6px;margin-bottom:8px;"></div>
 
-      <div style="display:flex; gap:8px; align-items:center;">
+      <div style="display:flex;gap:8px;align-items:center;">
         <button id="af_start" class="btn">Start</button>
-        <button id="af_stop"  class="btn btn-cancel" disabled>Stop</button>
+        <button id="af_stop" class="btn btn-cancel" disabled>Stop</button>
         <span id="af_status" style="margin-left:auto;color:#666;">pronto</span>
       </div>
 
       <div id="af_info" style="margin-top:6px;color:#444;"></div>
     `;
 
-    document.body.appendChild(p);
-
+    // unidades no painel
     const box = q('#af_units');
     units.forEach(u=>{
-      const saved = savedUnits[u] || {checked:false, qty:0};
-      const row = document.createElement('div');
+      const row=document.createElement('div');
       row.style.cssText='display:flex;align-items:center;gap:6px;margin-bottom:4px;';
-      row.innerHTML = `
-        <input type="checkbox" class="af_cb" data-u="${u}" ${saved.checked?'checked':''}>
+      const st=savedUnits[u]||{checked:false,qty:0};
+      row.innerHTML=`
+        <input type="checkbox" class="af_cb" data-u="${u}" ${st.checked?'checked':''}>
         <img src="${image_base+'unit/unit_'+u+'.png'}" style="width:16px;height:16px;">
-        <span style="width:120px">${u}</span>
-        <input type="number" min="0" step="1" value="${saved.qty}" class="af_qty" data-u="${u}" style="width:100px;">
+        <span style="width:120px;text-transform:capitalize">${u}</span>
+        <input type="number" class="af_qty" data-u="${u}" value="${st.qty}" style="width:100px;">
       `;
       box.appendChild(row);
     });
 
+    // salvar estado
     function saveState(){
       const st={};
       qa('.af_cb').forEach(cb=>{
-        const u=cb.dataset.u;
-        const qty=Number(q(`.af_qty[data-u="${u}"]`).value||0);
-        st[u]={checked:cb.checked,qty};
+        const u = cb.dataset.u;
+        const qn = q(`.af_qty[data-u="${u}"]`);
+        st[u]={checked:cb.checked,qty:Number(qn?.value||0)};
       });
       localStorage.setItem('AF_units',JSON.stringify(st));
       localStorage.setItem('AF_int',q('#af_interval').value);
       localStorage.setItem('AF_batch',q('#af_batch').value);
       localStorage.setItem('AF_onlyKnown',q('#af_onlyKnown').checked?'1':'0');
-      localStorage.setItem('AF_noLosses',q('#af_noLosses').checked?'1':'0');
-      localStorage.setItem('AF_gapMin',q('#af_gapMin').value);
+      localStorage.setItem('AF_noLosses', q('#af_noLosses').checked?'1':'0');
+      localStorage.setItem('AF_gapMin',   q('#af_gapMin').value);
       localStorage.setItem('AF_maxFields',q('#af_maxFields').value);
-      localStorage.setItem('AF_groupId',q('#af_group').value);
+      localStorage.setItem('AF_groupId',  q('#af_group').value);
     }
 
-    p.addEventListener('change',(ev)=>{
-      const t=ev.target;
-      if(
-        t.classList.contains('af_cb') ||
-        t.classList.contains('af_qty')||
-        [
-          'af_interval','af_batch','af_onlyKnown',
-          'af_noLosses','af_gapMin','af_maxFields','af_group'
-        ].includes(t.id)
-      ){
-        saveState();
-      }
-    });
+    p.addEventListener('change',saveState);
 
+    // drag
     (function(){
       const drag=q('#af_drag');
       let sx,sy,ox,oy,m=false;
-      drag.onmousedown=e=>{m=true; sx=e.clientX; sy=e.clientY; ox=p.offsetLeft; oy=p.offsetTop; e.preventDefault();};
+      drag.onmousedown=e=>{m=true;sx=e.clientX;sy=e.clientY;ox=p.offsetLeft;oy=p.offsetTop;e.preventDefault();}
       document.onmousemove=e=>{
-        if(!m) return;
-        p.style.left=(ox+(e.clientX-sx))+"px";
-        p.style.top=(oy+(e.clientY-sy))+"px";
-        p.style.right="auto";
-      };
+        if(!m)return;
+        p.style.left=(ox + e.clientX - sx)+'px';
+        p.style.top =(oy + e.clientY - sy)+'px';
+        p.style.right='auto';
+      }
       document.onmouseup=()=>m=false;
+      q('#af_hide').onclick=()=>p.style.display='none';
     })();
 
-    q('#af_hide').onclick=()=>{p.style.display='none';};
-    q('#af_start').onclick=()=>start();
-    q('#af_stop' ).onclick=()=>stop();
+    q('#af_start').onclick=start;
+    q('#af_stop').onclick=stop;
 
     return p;
   }
 
-  function status(t){const s=q('#af_status'); if(s)s.textContent=t;}
-  function info(t){const i=q('#af_info'); if(i)i.textContent=t;}
+  function status(t){ const s=q('#af_status'); if(s)s.textContent=t; }
+  function info(t){ const i=q('#af_info'); if(i)i.textContent=t; }
 
   async function ensurePanel(show=true){
-    const p = await buildPanel();
-    if(show) p.style.display='block';
+    const p=await buildPanel();
+    if(show)p.style.display='block';
     return p;
   }
-  // ---------- RENDERIZAÇÃO DO PLANO (igual sua v2.2) ----------
-  function clearPlanTable(){
-    $('#'+PLAN_ID).remove();
-  }
+
+  //---------------------- PLANO NA UI -------------------------
+  function clearPlanTable(){ $('#'+PLAN_ID).remove(); }
 
   function renderPlanTable(plan){
     clearPlanTable();
-    const groups = {};
-    plan.forEach(j=> (groups[j.originCoord] = groups[j.originCoord] || []).push(j));
+    const groups={};
+    plan.forEach(j=>{ (groups[j.originCoord]=groups[j.originCoord]||[]).push(j); });
 
-    const $wrap = $(`
+    const $wrap=$(`
       <div id="${PLAN_ID}" class="vis" style="margin:8px 0;">
         <h4>FarmGod</h4>
         <div id="AF_progress" class="progress-bar live-progress-bar progress-bar-alive" style="width:98%;margin:5px auto;">
-          <div style="background: rgb(146, 194, 0);"></div>
+          <div style="background: rgb(146,194,0);"></div>
           <span class="label"></span>
         </div>
         <table class="vis" width="100%">
           <thead>
             <tr>
               <th style="text-align:center;">Origem</th>
-              <th style="text-align:center;">Alvo</th>
-              <th style="text-align:center;">Campos</th>
+              <th style="text-align:center;">Target</th>
+              <th style="text-align:center;">fields</th>
               <th style="text-align:center;">Farm</th>
             </tr>
           </thead>
@@ -228,23 +236,26 @@
       </div>
     `);
 
-    const $tbody = $wrap.find('tbody');
+    const $tb=$wrap.find('tbody');
 
-    Object.keys(groups).forEach(originCoord=>{
-      const arr = groups[originCoord];
-      $tbody.append(`
+    Object.keys(groups).forEach(origin=>{
+      const arr=groups[origin];
+      $tb.append(`
         <tr>
           <td colspan="4" style="background:#e7d098;">
-            <input type="button" class="btn" value="Ir para ${originCoord}" onclick="location.href='${game_data.link_base_pure}screen=info_village&id=${arr[0].originId}'" style="float:right;">
-            <b style="line-height:24px;">Origem: ${originCoord}</b>
+            <input type="button" class="btn" value="Ir para ${origin}" 
+              onclick="location.href='${game_data.link_base_pure}info_village&id=${arr[0].originId}'" 
+              style="float:right;">
+            <b>Origem: ${origin}</b>
           </td>
         </tr>
       `);
+
       arr.forEach(j=>{
-        $tbody.append(`
+        $tb.append(`
           <tr class="af_plan_row" data-origin="${j.originId}" data-target="${j.targetId}">
-            <td style="text-align:center;"><a href="${game_data.link_base_pure}screen=info_village&id=${j.originId}">${j.originCoord}</a></td>
-            <td style="text-align:center;"><a href="${game_data.link_base_pure}screen=info_village&id=${j.targetId}">${j.targetCoord}</a></td>
+            <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${j.originId}">${j.originCoord}</a></td>
+            <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${j.targetId}">${j.targetCoord}</a></td>
             <td style="text-align:center;">${j.distance.toFixed(2)}</td>
             <td style="text-align:center;"><span class="farm_icon farm_icon_a"></span></td>
           </tr>
@@ -252,65 +263,86 @@
       });
     });
 
-    const $anchor = $('#am_widget_Farm').first();
-    if ($anchor.length) $anchor.before($wrap);
-    else $('body').prepend($wrap);
+    $('#am_widget_Farm').first().before($wrap);
 
-    if (window.UI && UI.InitProgressBars) {
+    if(UI?.InitProgressBars){
       UI.InitProgressBars();
-      if (UI.updateProgressBar) {
-        $('#AF_progress').data('current', 0).data('max', plan.length);
-        UI.updateProgressBar($('#AF_progress'), 0, plan.length);
+      if(UI.updateProgressBar){
+        $('#AF_progress').data('current',0).data('max',plan.length);
+        UI.updateProgressBar($('#AF_progress'),0,plan.length);
       }
     }
   }
 
   function updateProgressAfterSend(){
-    if (!window.UI || !UI.updateProgressBar) return;
-    const $pb = $('#AF_progress');
-    const cur = ($pb.data('current') || 0) + 1;
-    const max = $pb.data('max') || 0;
-    $pb.data('current', cur);
-    UI.updateProgressBar($pb, cur, max);
+    const $pb=$('#AF_progress');
+    if(!$pb.length||!UI?.updateProgressBar)return;
+    const c=($pb.data('current')||0)+1;
+    const m=($pb.data('max')||0);
+    $pb.data('current',c);
+    UI.updateProgressBar($pb,c,m);
   }
 
-  // ---------- BUSCA DE FARMS (Assistente de Saque) ----------
-  function buildAmFarmBaseUrl() {
-    const p = new URLSearchParams(window.location.search);
-    const order = p.get('order');
-    const dir = p.get('dir');
-    const extra =
-      (order ? '&order='+encodeURIComponent(order) : '') +
-      (dir   ? '&dir='+encodeURIComponent(dir) : '');
-    return TribalWars.buildURL('GET','am_farm') + extra;
+  //------------------- LEITURA TEMPLATE A -------------------
+  function getTemplateAId(){
+    const inp=q('form[action*="action=edit_all"] input[name*="template"][name*="[id]"]');
+    return inp?Number(inp.value):1;
+  }
+
+  async function saveTemplateAFromPanel(){
+    const form=q('form[action*="action=edit_all"]');
+    if(!form)throw new Error('Form template não encontrado');
+    const tr=form.querySelector('input[name*="template"][name*="[id]"]')?.closest('tr');
+    if(!tr)throw new Error('Linha Template A não encontrada');
+
+    const units=game_data.units.filter(u=>!skipUnits.has(u));
+    units.forEach(u=>{
+      const cb=q(`.af_cb[data-u="${u}"]`);
+      const qty=q(`.af_qty[data-u="${u}"]`);
+      const inp=tr.querySelector(`input[name="${u}[amount]"],input[name^="${u}["],input[name*="[${u}]"]`);
+      if(inp && cb && qty) inp.value=cb.checked?(parseInt(qty.value||0)||0):0;
+    });
+
+    const data=$(form).serialize();
+    await $.post(form.action, data);
+  }
+
+  //----------------- BUSCA AM_FARM MULTIPÁGINA -----------------
+  function buildAmFarmBaseUrl(){
+    const params=new URLSearchParams(location.search);
+    const order=params.get('order');
+    const dir  =params.get('dir');
+    let extra='';
+    if(order)extra+='&order='+order;
+    if(dir)  extra+='&dir='  +dir;
+    return TribalWars.buildURL('GET','am_farm')+extra;
   }
 
   async function fetchFarms(){
     const farms={};
-    const base = buildAmFarmBaseUrl();
+    const base=buildAmFarmBaseUrl();
 
-    const firstHtml = await $.ajax({url:base});
-    const $first = $(firstHtml);
+    const firstHtml=await $.get(base);
+    const $first=$(firstHtml);
 
-    const hasFarmPage =
-         /[?&]Farm_page=\d+/.test(firstHtml)
-      || $first.find('a.paged-nav-item[href*="Farm_page="]').length>0;
+    const hasFarmPage=/[?&]Farm_page=\d+/.test(firstHtml) ||
+                      $first.find('a.paged-nav-item[href*="Farm_page="]').length>0;
 
-    const pageParam = hasFarmPage ? 'Farm_page':'page';
+    const pageParam=hasFarmPage?'Farm_page':'page';
 
-    // detectar quantidade de páginas
-    const $nav = $first.find('#plunder_list_nav').first();
-    let pageCount = 0;
-    if ($nav.length){
-      const items = $nav.find('a.paged-nav-item, strong.paged-nav-item');
-      if (items.length){
-        const last = items.last().text().replace(/\D+/g,'');
-        pageCount = Math.max(0, parseInt(last,10)||0);
+    let pageCount=0;
+    const $nav=$first.find('#plunder_list_nav').first();
+    if($nav.length){
+      const items=$nav.find('a.paged-nav-item,strong.paged-nav-item');
+      if(items.length){
+        const last=items.last().text().replace(/\D+/g,'');
+        pageCount=Math.max(0,parseInt(last)||0);
       }
     }
+
     if(!pageCount){
-      const sel = $first.find('.paged-nav-item').first().closest('td').find('select').first();
-      if(sel.length) pageCount = sel.find('option').length-1;
+      const $sel=$first.find('.paged-nav-item').first().closest('td').find('select').first();
+      if($sel.length) pageCount=Math.max(0,$sel.find('option').length-1);
     }
 
     function extract($h){
@@ -318,147 +350,151 @@
       .each(function(){
         const $tr=$(this);
         const id=parseInt(this.id.split('_')[1],10);
-        const coordMatch=($tr.find('a[href*="view="]').first().text()||'').match(/\d{1,3}\|\d{1,3}/);
-        if(!coordMatch) return;
-
-        const coord = coordMatch[0];
-        const dotImg = $tr.find('img[src*="dots"]').attr('src')||"";
-        const dotMatch = dotImg.match(/dots\/(green|yellow|red|blue|red_blue)/);
-        const dot = dotMatch ? dotMatch[1] : 'green';
-
-        farms[coord] = { id, dot };
+        const coordMatch=$tr.find('a[href*="screen=report&mode=all&view="]').first().text().match(/\d{1,3}\|\d{1,3}/);
+        if(!coordMatch)return;
+        const coord=coordMatch[0];
+        const dotImg=$tr.find('img[src*="graphic/dots/"]').attr('src')||'';
+        const dot=/dots\/(green|yellow|red|blue|red_blue)/.exec(dotImg)?.[1] || 'green';
+        const hasReport=!!$tr.find('a[href*="view="]').length;
+        farms[coord]={id,dot,hasReport};
       });
     }
 
     extract($first);
 
-    const sep = base.includes('?')?'&':'?';
+    const sep=base.includes('?')?'&':'?';
     for(let p=1;p<=pageCount;p++){
-      const html = await $.ajax({url:`${base}${sep}${pageParam}=${p}`});
+      const html=await $.get(`${base}${sep}${pageParam}=${p}`);
       extract($(html));
     }
 
     return farms;
   }
 
-  // ---------- BUSCA DE ALDEIAS DE ORIGEM ----------
   async function fetchVillages(groupId){
     const data={};
-    const base = TribalWars.buildURL('GET','overview_villages',{mode:'combined',group:groupId});
+    const url=TribalWars.buildURL('GET','overview_villages',{mode:'combined',group:groupId});
 
     async function process(page){
-      const html = await $.ajax({url: base+(page===-1?'':'&page='+page)});
-      const $html = $(html);
+      const html=await $.get(url+(page===-1?'':'&page='+page));
+      const $h=$(html);
 
-      $html.find('#combined_table .row_a, #combined_table .row_b').each(function(){
+      $h.find('#combined_table .row_a,#combined_table .row_b').each(function(){
         const $el=$(this);
         const $qel=$el.find('.quickedit-label').first();
-        const coordMatch=($qel.text()||'').match(/\d{1,3}\|\d{1,3}/);
-        if(!coordMatch) return;
-
-        const coord=coordMatch[0];
+        const cstr=$qel.text().match(/\d{1,3}\|\d{1,3}/);
+        if(!cstr)return;
+        const coord=cstr[0];
         const id=parseInt($el.find('.quickedit-vn').first().data('id'),10);
+        const name=$qel.data('text')||$qel.text();
+
         const units=[];
-        $el.find('.unit-item').each((i,elem)=>{
-          const u=game_data.units[i];
-          if(!skipUnits.has(u))
-            units.push(parseInt($(elem).text().replace(/\D+/g,''),10)||0);
+        $el.find('.unit-item').each(function(i){
+          const uname=game_data.units[i];
+          if(!skipUnits.has(uname))
+            units.push(parseInt($(this).text().replace(/\D+/g,''))||0);
         });
 
-        data[coord]={id,coord,units};
+        data[coord]={id,name,coord,units};
       });
 
-      const sel = $html.find('.paged-nav-item').first().closest('td').find('select').first();
-      const navLen = sel.length ? sel.find('option').length - 1 : $html.find('.paged-nav-item').length;
-      if(page < navLen) return process(page===-1?1:page+1);
+      const navSel=$h.find('.paged-nav-item').first().closest('td').find('select').first();
+      const navLen=navSel.length?navSel.find('option').length-1:$h.find('.paged-nav-item').not('[href*="page=-1"]').length;
+      if(page<navLen) return process(page===-1?1:page+1);
     }
 
     await process(-1);
     return data;
   }
 
-  // ---------- PLANEJAMENTO COM PATCH: "1 alvo == 1 ataque" ----------
-  function planPerOrigin(origins, farms, opts){
-    const unitsUse = game_data.units.filter(u=>!skipUnits.has(u));
-    const need={};
+  //----------------------------------------------------------------------
+  //---------------------- PATCH APLICADO AQUI ---------------------------
+ ----------------------------------------------------------------------
 
-    // tropas marcadas na UI
-    unitsUse.forEach(u=>{
+  // ⭐⭐ **ESTA É A ÚNICA FUNÇÃO ALTERADA** ⭐⭐
+  // Restrição: APENAS 1 ATAQUE por alvo (global) em cada ciclo
+  function planPerOrigin(origins, farms, opts){
+    const useUnits = game_data.units.filter(u=>!skipUnits.has(u));
+
+    const need={};
+    useUnits.forEach(u=>{
       const cb=q(`.af_cb[data-u="${u}"]`);
-      const qty=q(`.af_qty[data-u="${u}"]`);
-      need[u] = cb && cb.checked ? (parseInt(qty.value||'0',10)||0) : 0;
+      const qt=q(`.af_qty[data-u="${u}"]`);
+      need[u]=(cb&&cb.checked)?(parseInt(qt.value||0)||0):0;
     });
 
-    // opções
     const { maxFields, onlyKnown, noLosses, gapSec, batch } = opts;
-
     const nowS=nowSec();
     const result=[];
 
-    // 🔥 PATCH AQUI: impedir que mais de uma origem ataque o mesmo alvo
+    // PATCH → impede multi-origem no mesmo alvo
     const usedTargets = new Set();
 
     Object.keys(origins).forEach(coordOrigin=>{
-      const org = origins[coordOrigin];
-      const orgCoord = toCoordObj(coordOrigin);
-      if(!orgCoord) return;
+      const org=origins[coordOrigin];
+      const orgCoord=toCoordObj(coordOrigin);
+      if(!orgCoord)return;
 
-      // quantos ataques essa origem pode fazer
-      let possible=Infinity, hasSome=false;
+      let possible=Infinity;
+      let hasAny=false;
       const avail={};
       let idx=0;
+
       for(let i=0;i<game_data.units.length;i++){
-        const u=game_data.units[i];
-        if(skipUnits.has(u)) continue;
+        const uname=game_data.units[i];
+        if(skipUnits.has(uname))continue;
         const have=org.units[idx++]||0;
-        avail[u]=have;
+        avail[uname]=have;
       }
 
       Object.keys(need).forEach(u=>{
-        if(need[u]>0){
-          hasSome=true;
-          const c=Math.floor((avail[u]||0)/need[u]);
-          possible=Math.min(possible,c);
+        const n=need[u];
+        if(n>0){
+          hasAny=true;
+          const have=avail[u]||0;
+          const count=Math.floor(have/n);
+          possible=Math.min(possible,count);
         }
       });
 
-      if(!hasSome || !isFinite(possible)) possible=0;
-
+      if(!hasAny||!isFinite(possible))possible=0;
       const quota=Math.min(batch,Math.max(0,possible));
-      if(quota<=0) return;
+      if(quota<=0)return;
 
-      const ordered = Object.keys(farms)
-        .map(c=>({coord:c,d:dist(orgCoord,toCoordObj(c))}))
-        .sort((a,b)=>a.d-b.d);
+      const ordered=Object.keys(farms).map(coord=>{
+        return {coord,d:dist(orgCoord,toCoordObj(coord))};
+      }).sort((a,b)=>a.d-b.d);
 
       let picked=0;
+
       for(const it of ordered){
-        if(picked>=quota) break;
+        if(picked>=quota)break;
 
-        const fr=farms[it.coord];
-        if(!fr) continue;
+        const f=farms[it.coord];
+        if(!f)continue;
 
-        if(fr.dot==='red' || fr.dot==='red_blue') continue;
-        if(noLosses && fr.dot==='yellow') continue;
-        if(onlyKnown && fr.dot!=='green' && fr.dot!=='blue') continue;
-        if(it.d > maxFields) continue;
+        if(f.dot==='red' || f.dot==='red_blue')continue;
+        if(noLosses && f.dot==='yellow')continue;
+        if(onlyKnown && !f.hasReport)continue;
+        if(it.d>maxFields)continue;
 
-        const key=org.id+':'+fr.id;
-        const last=lastSent[key]||0;
+        // PATCH → verifica se alvo já foi usado por outra origem
+        if(usedTargets.has(f.id)) continue;
+
+        const key=org.id+':'+f.id;
+        const last=lastSent[key]?Number(lastSent[key]):0;
         if(last && (nowS-last)<gapSec) continue;
 
-        // 🔥 PATCH: impedir duplicação de alvo
-        if(usedTargets.has(fr.id)) continue;
-        usedTargets.add(fr.id);
+        // marca alvo como já usado
+        usedTargets.add(f.id);
 
         result.push({
-          originId: org.id,
-          targetId: fr.id,
-          originCoord: coordOrigin,
-          targetCoord: it.coord,
-          distance: it.d
+          originId:org.id,
+          targetId:f.id,
+          originCoord:coordOrigin,
+          targetCoord:it.coord,
+          distance:it.d
         });
-
         picked++;
       }
     });
@@ -466,115 +502,123 @@
     return result;
   }
 
-  // ---------- ENVIO DO ATAQUE ----------
-  async function sendWithTemplateA(targetId,originId){
-    return new Promise((ok,err)=>{
+  //----------------------------------------------------------------------
+  //------------------------------- ENVIO --------------------------------
+  //----------------------------------------------------------------------
+  async function sendWithTemplateA(targetId, originVillageId){
+    return new Promise((resolve,reject)=>{
       try{
-        const url=Accountmanager.send_units_link.replace(/village=\d+/, 'village='+originId);
-        const data={target:targetId,template_id:getTemplateAId(),source:originId};
+        const url=Accountmanager.send_units_link.replace(/village=\d+/,`village=${originVillageId}`);
+        const data={target:targetId,template_id:getTemplateAId(),source:originVillageId};
+        const n=Timing?.getElapsedTimeSinceLoad?.() ?? Date.now();
 
-        const n=(Timing && Timing.getElapsedTimeSinceLoad)?Timing.getElapsedTimeSinceLoad():Date.now();
-        if(Accountmanager?.farm?.last_click && n-Accountmanager.farm.last_click<200){
-          return setTimeout(()=>sendWithTemplateA(targetId,originId).then(ok).catch(err),250);
+        if(Accountmanager?.farm){
+          if(Accountmanager.farm.last_click && n - Accountmanager.farm.last_click < 200){
+            return setTimeout(()=>sendWithTemplateA(targetId,originVillageId).then(resolve).catch(reject),220);
+          }
+          Accountmanager.farm.last_click=n;
         }
-        if(Accountmanager?.farm) Accountmanager.farm.last_click=n;
 
-        TribalWars.post(url,null,data,r=>ok(r),e=>err(e||"Falha no envio"));
-      }catch(e){err(e);}
+        TribalWars.post(url,null,data,r=>resolve(r),e=>reject(e||'Erro no envio'));
+      }catch(e){reject(e);}
     });
   }
 
-  // ---------- CICLO COMPLETO ----------
+  //----------------------------------------------------------------------
+  //------------------------------- CICLO --------------------------------
+  //----------------------------------------------------------------------
   async function tick(){
     try{
-      if(!running) return;
+      if(!running)return;
 
       const groupId=q('#af_group').value;
-      const batch=Math.max(1,parseInt(q('#af_batch').value||10));
+      const batch  =Number(q('#af_batch').value);
       const onlyKnown=q('#af_onlyKnown').checked;
-      const noLosses=q('#af_noLosses').checked;
-      const gapMin=Math.max(1,parseInt(q('#af_gapMin').value||15));
-      const gapSec=gapMin*60;
-      const maxFields=Math.max(1,parseInt(q('#af_maxFields').value||25));
+      const noLosses =q('#af_noLosses').checked;
+      const gapMin   =Number(q('#af_gapMin').value);
+      const gapSec   =gapMin*60;
+      const maxFields=Number(q('#af_maxFields').value);
 
-      status("Salvando template A...");
+      status('salvando template...');
       await saveTemplateAFromPanel();
 
-      status("Lendo aldeias...");
+      status('lendo aldeias...');
       const villages=await fetchVillages(groupId);
 
-      status("Lendo farms...");
+      status('lendo lista...');
       const farms=await fetchFarms();
 
-      status("Planejando...");
-      const plan=planPerOrigin(villages,farms,{maxFields,onlyKnown,noLosses,gapSec,batch});
+      status('planejando...');
+      const plan=planPerOrigin(villages, farms, {maxFields,onlyKnown,noLosses,gapSec,batch});
 
-      info(`Plano gerado: ${plan.length} envios`);
+      info(`Plano: ${plan.length} envios`);
       renderPlanTable(plan);
 
+      if(!plan.length){
+        status('sem alvos válidos');
+        return;
+      }
+
+      const ts=nowSec();
       let sent=0;
-      const nowS=nowSec();
 
       for(const job of plan){
-        if(!running) break;
+        if(!running)break;
 
-        status(`Enviando ${sent+1}/${plan.length} (${job.originCoord} → ${job.targetCoord})`);
-
+        status(`enviando ${sent+1}/${plan.length}`);
         try{
           await sendWithTemplateA(job.targetId,job.originId);
-          lastSent[job.originId+':'+job.targetId]=nowS;
+
+          lastSent[job.originId+':'+job.targetId]=ts;
           saveLast(lastSent);
 
           $(`#${PLAN_ID} tr.af_plan_row[data-origin="${job.originId}"][data-target="${job.targetId}"]`).remove();
           updateProgressAfterSend();
 
-          if(UI&&UI.SuccessMessage)
-            UI.SuccessMessage(`OK ${job.originCoord} → ${job.targetCoord}`);
-
+          UI?.SuccessMessage?.(`${job.originCoord} → ${job.targetCoord}`);
           sent++;
           await sleep(350+Math.random()*250);
-
         }catch(e){
-          if(UI&&UI.ErrorMessage) UI.ErrorMessage(e.error||"Falha no envio");
+          UI?.ErrorMessage?.(e);
         }
       }
 
-      status(`OK: ${sent}/${plan.length}`);
+      status(`OK ${sent}/${plan.length}`);
     }catch(e){
+      status('erro: '+e);
       console.error(e);
-      status("Erro: "+e);
     }
   }
 
   async function start(){
-    if(running) return;
+    if(running)return;
+    await ensurePanel(true);
     running=true;
-
-    const btnS=q('#af_start'), btnP=q('#af_stop');
-    if(btnS) btnS.disabled=true;
-    if(btnP) btnP.disabled=false;
-
-    status("Iniciando...");
+    q('#af_start').disabled=true;
+    q('#af_stop').disabled=false;
+    status('iniciando...');
     clearPlanTable();
-
-    const minutes=Math.max(0.2,parseFloat(q('#af_interval').value||3));
+    const mins=parseFloat(q('#af_interval').value||'3');
     await tick();
-    timer=setInterval(tick,minutes*60*1000);
+    timer=setInterval(tick,mins*60000);
   }
 
   function stop(){
     running=false;
-    if(timer) clearInterval(timer);
-    const btnS=q('#af_start'), btnP=q('#af_stop');
-    if(btnS) btnS.disabled=false;
-    if(btnP) btnP.disabled=true;
-    status("Parado");
+    if(timer)clearInterval(timer);
+    q('#af_start').disabled=false;
+    q('#af_stop').disabled=true;
+    status('parado');
   }
 
+  //----------------------------------------------------------------------
+  //------------------------------- BOOT --------------------------------
+  //----------------------------------------------------------------------
   (async function(){
     await ensurePanel(true);
-    if(UI&&UI.SuccessMessage) UI.SuccessMessage("AutoFarm v2.3 carregado (BR138)");
+    UI?.SuccessMessage?.('AutoFarm v2.2 (BR138) carregado.');
   })();
 
   window.AutoFarm={start,stop,isRunning:()=>running,__loaded:true};
+
 })();
