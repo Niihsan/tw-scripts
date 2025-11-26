@@ -8,7 +8,7 @@
     }
 
     // -------------------------------
-    // BOTÃO "ENVIAR ATAQUE"
+    // BOTÃO "ENVIAR ATAQUE" (pra UI)
     // -------------------------------
     function getAttackButton() {
         // 1) ID clássico
@@ -33,10 +33,22 @@
     }
 
     // -------------------------------
+    // FORMULÁRIO DE CONFIRMAÇÃO
+    // (para disparar via submit)
+    // -------------------------------
+    function getAttackForm() {
+        // normalmente é o único form do popup
+        let f = document.querySelector('form[action*="command"]');
+        if (f) return f;
+        f = document.querySelector('form');
+        return f || null;
+    }
+
+    // -------------------------------
     // DETECTAR TELA DE CONFIRMAÇÃO
     // -------------------------------
     function isConfirmScreen() {
-        if (!getAttackButton()) return false;
+        if (!getAttackForm()) return false;
         const txt = (document.body.innerText || '').toLowerCase();
         return txt.includes('confirmar ataque') || txt.includes('confirm attack');
     }
@@ -115,8 +127,10 @@
     // -------------------------------
     function createSchedulerUI() {
         const confirmBtn = getAttackButton();
-        if (!confirmBtn) {
-            alert('Agendador: não achei o botão de enviar ataque nesta tela.');
+        const form = getAttackForm();
+
+        if (!form) {
+            alert('Agendador: não achei o formulário de ataque nesta tela.');
             return;
         }
 
@@ -147,7 +161,11 @@
             'style="margin-top:4px; font-size:11px; color:#804000;">' +
             'Aguardando horário...</div>';
 
-        confirmBtn.parentElement.appendChild(box);
+        if (confirmBtn && confirmBtn.parentElement) {
+            confirmBtn.parentElement.appendChild(box);
+        } else {
+            form.appendChild(box);
+        }
 
         const inputTime = box.querySelector('#tw-attack-time');
         const inputOffset = box.querySelector('#tw-attack-offset');
@@ -179,12 +197,8 @@
             fired = true;
             clearTimers();
             status.textContent = 'Enviando ataque AGORA...';
-            const btnSend = getAttackButton();
-            if (btnSend) {
-                btnSend.click();
-            } else {
-                alert('Agendador: botão de envio não encontrado na hora de disparar.');
-            }
+            log('Submetendo formulário de ataque via submit().');
+            form.submit(); // 🔥 disparo direto, sem click
         }
 
         btn.addEventListener('click', function () {
@@ -230,39 +244,36 @@
             let sendSecTotal = Math.floor(sendMsTotal / 1000);
             let sendMs = ((sendMsTotal % 1000) + 1000) % 1000;
 
-            // normaliza dentro de 0–24h
+            // normaliza dentro de 0–24h (exibição)
             let sendSecDay = ((sendSecTotal % (24 * 3600)) + (24 * 3600)) % (24 * 3600);
             const sendH = Math.floor(sendSecDay / 3600);
             const sendM = Math.floor((sendSecDay % 3600) / 60);
             const sendS = sendSecDay % 60;
 
-            // delay a partir de agora (em ms)
-            const nowMsTotal = nowSec * 1000; // referência do servidor
+            // delay a partir de agora (em ms) no "dia do servidor"
+            const nowMsTotal = nowSec * 1000;
             let delayMs = sendMsTotal - nowMsTotal;
             while (delayMs <= 0) {
                 delayMs += 24 * 3600 * 1000; // próximo dia, segurança
             }
 
-            log('Servidor agora (H:M:S):', serverHMS, 'seg:', nowSec);
-            log('Chegada alvo segundos-base:', arrivalSecBase, 'totalMs:', arrivalMsTotal);
-            log('Envio em', delayMs, 'ms. Hora de envio (srv):', formatTime(sendH, sendM, sendS, sendMs),
-                'Chegada (srv):', formatTime(parsed.hh, parsed.mm, parsed.ss, parsed.ms || 0),
-                'Offset:', offsetMs, 'ms');
-
             const arrivalStr = formatTime(parsed.hh, parsed.mm, parsed.ss, parsed.ms || 0);
             const sendStr = formatTime(sendH, sendM, sendS, sendMs);
+
+            log('Servidor agora:', serverHMS, 'seg:', nowSec);
+            log('Chegada alvo:', arrivalStr, 'Envio (srv):', sendStr, 'delayMs:', delayMs, 'offsetMs:', offsetMs);
 
             status.textContent =
                 'Chegada alvo: ' + arrivalStr +
                 ' | Envio (calculado): ' + sendStr +
                 ' | Offset: ' + offsetMs + ' ms';
 
-            // Contagem regressiva baseada no relógio local, mas usando delayMs
-            const baseNow = Date.now();
-            const startPerf = performance.now();
+            // Contagem regressiva (visual)
+            const baseNow = performance.now();
             countdownInterval = setInterval(function () {
-                const nowEst = baseNow + (performance.now() - startPerf);
-                const remaining = delayMs - (nowEst - baseNow);
+                const now = performance.now();
+                const elapsed = now - baseNow;
+                const remaining = delayMs - elapsed;
                 if (remaining <= 0) {
                     clearInterval(countdownInterval);
                     countdownInterval = null;
@@ -282,13 +293,13 @@
                     ' | Offset: ' + offsetMs + ' ms';
             }, 50);
 
-            // Disparo: grosso + fino
-            const nowReal = Date.now();
+            // Disparo: grosso + fino com performance.now()
+            const start = performance.now();
             const remainingInitial = delayMs;
 
             if (remainingInitial <= 2000) {
                 fineInterval = setInterval(function () {
-                    if (Date.now() - nowReal >= delayMs) {
+                    if (performance.now() - start >= delayMs) {
                         fire();
                     }
                 }, 5);
@@ -296,7 +307,7 @@
                 const coarseDelay = remainingInitial - 1500;
                 coarseTimeout = setTimeout(function () {
                     fineInterval = setInterval(function () {
-                        if (Date.now() - nowReal >= delayMs) {
+                        if (performance.now() - start >= delayMs) {
                             fire();
                         }
                     }, 5);
