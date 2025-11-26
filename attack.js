@@ -34,7 +34,7 @@
 
     // -------------------------------
     // DETECTAR TELA DE CONFIRMAÇÃO
-    // (funciona mesmo com popup do mapa)
+    // (funciona mesmo popup no mapa)
     // -------------------------------
     function isConfirmScreen() {
         if (!getAttackButton()) return false;
@@ -79,15 +79,15 @@
     function getDurationMs() {
         const tds = document.querySelectorAll('table tr td');
         for (let i = 0; i < tds.length; i++) {
-            const label = tds[i].innerText.trim().toLowerCase();
+            const label = (tds[i].innerText || '').trim().toLowerCase();
             if (label.startsWith('duração') || label.startsWith('duration')) {
                 const valueTd = tds[i + 1];
                 if (!valueTd) break;
-                const m = valueTd.innerText.trim().match(/(\d{1,2}):(\d{2}):(\d{2})/);
-                if (!m) break;
-                const hh = parseInt(m[1], 10);
-                const mm = parseInt(m[2], 10);
-                const ss = parseInt(m[3], 10);
+                const match = (valueTd.innerText || '').trim().match(/(\d{1,2}):(\d{2}):(\d{2})/);
+                if (!match) break;
+                const hh = parseInt(match[1], 10);
+                const mm = parseInt(match[2], 10);
+                const ss = parseInt(match[3], 10);
                 const ms = ((hh * 60 + mm) * 60 + ss) * 1000;
                 log('Duração lida:', valueTd.innerText.trim(), '=>', ms, 'ms');
                 return ms;
@@ -98,8 +98,7 @@
     }
 
     // -------------------------------
-    // PARSE HH:MM:SS.mmm
-    // (mmm opcional)
+    // PARSE HH:MM:SS.mmm (mmm opcional)
     // -------------------------------
     function parseTimeWithMs(str) {
         const m = str.match(/^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/);
@@ -109,8 +108,7 @@
         const ss = parseInt(m[3], 10);
         let ms = 0;
         if (m[4]) {
-            // normalizar para 3 dígitos
-            const pad = (m[4] + '000').slice(0, 3);
+            const pad = (m[4] + '000').slice(0, 3); // normaliza pra 3 dígitos
             ms = parseInt(pad, 10);
         }
         return { hh, mm, ss, ms };
@@ -127,8 +125,7 @@
         }
 
         if (document.querySelector('#tw-attack-scheduler-box')) {
-            // Já existe
-            return;
+            return; // já existe
         }
 
         const box = document.createElement('div');
@@ -144,6 +141,9 @@
             'Chegada desejada (HH:MM:SS.mmm): ' +
             '<input type="text" id="tw-attack-time" placeholder="07:39:54.250" ' +
             'style="width:110px; font-size:11px;">' +
+            '&nbsp;Offset envio (ms, negativo = mais cedo): ' +
+            '<input type="text" id="tw-attack-offset" value="-600" ' +
+            'style="width:60px; font-size:11px;" title="Ajuste fino. Ex: -600 = envia 0,6s antes.">' +
             '<button type="button" id="tw-attack-schedule" ' +
             'style="font-size:11px; margin-left:4px;">Agendar</button>' +
             '<div id="tw-attack-status" ' +
@@ -152,29 +152,58 @@
 
         confirmBtn.parentElement.appendChild(box);
 
-        const input = box.querySelector('#tw-attack-time');
+        const inputTime = box.querySelector('#tw-attack-time');
+        const inputOffset = box.querySelector('#tw-attack-offset');
         const btn = box.querySelector('#tw-attack-schedule');
         const status = box.querySelector('#tw-attack-status');
 
-        let timerId = null;
+        let coarseTimeout = null;
+        let fineInterval = null;
         let countdownInterval = null;
+        let fired = false;
 
-        btn.addEventListener('click', function () {
-            if (timerId) {
-                clearTimeout(timerId);
-                timerId = null;
+        function clearTimers() {
+            if (coarseTimeout) {
+                clearTimeout(coarseTimeout);
+                coarseTimeout = null;
+            }
+            if (fineInterval) {
+                clearInterval(fineInterval);
+                fineInterval = null;
             }
             if (countdownInterval) {
                 clearInterval(countdownInterval);
                 countdownInterval = null;
             }
+        }
 
-            const raw = (input.value || '').trim();
+        function fire(sendTime, targetArrival) {
+            if (fired) return;
+            fired = true;
+            clearTimers();
+            status.textContent = 'Enviando ataque AGORA...';
+            log('Disparando ataque. Envio calculado:', sendTime.toISOString(), 'Chegada:', targetArrival.toISOString());
+            const btnSend = getAttackButton();
+            if (btnSend) {
+                btnSend.click();
+            } else {
+                alert('Agendador: botão de envio não encontrado na hora de disparar.');
+            }
+        }
+
+        btn.addEventListener('click', function () {
+            clearTimers();
+            fired = false;
+
+            const raw = (inputTime.value || '').trim();
             const parsed = parseTimeWithMs(raw);
             if (!parsed) {
                 alert('Formato inválido. Use HH:MM:SS.mmm (ex: 07:39:54.250) ou sem milissegundos.');
                 return;
             }
+
+            let offsetMs = Number(inputOffset.value.replace(',', '.'));
+            if (isNaN(offsetMs)) offsetMs = 0;
 
             const serverNow = getServerDateTime();
             if (!serverNow) {
@@ -192,34 +221,36 @@
             const targetArrival = new Date(serverNow.getTime());
             targetArrival.setHours(parsed.hh, parsed.mm, parsed.ss, parsed.ms);
 
-            // Se chegou antes da hora atual, assume próximo dia
+            // Se já passou, joga para o próximo dia
             if (targetArrival <= serverNow) {
                 targetArrival.setDate(targetArrival.getDate() + 1);
             }
 
-            const sendTimeMs = targetArrival.getTime() - durationMs;
+            // Hora de envio = chegada - duração + offset
+            const sendTimeMs = targetArrival.getTime() - durationMs + offsetMs;
             const sendTime = new Date(sendTimeMs);
 
             if (sendTime <= serverNow) {
-                alert('Essa chegada é impossível: a hora de envio já passou.');
+                alert('Essa chegada é impossível: a hora de envio já passou (mesmo com offset).');
                 return;
             }
 
             const delayMs = sendTimeMs - serverNow.getTime();
 
             log('Chegada desejada:', targetArrival.toString());
-            log('Envio programado:', sendTime.toString(), 'em', delayMs, 'ms');
+            log('Envio programado:', sendTime.toString(), 'em', delayMs, 'ms. Offset:', offsetMs, 'ms');
 
             status.textContent =
                 'Chegada: ' + targetArrival.toLocaleString() +
                 ' | Envio: ' + sendTime.toLocaleTimeString() +
-                ' (programado)';
+                ' (programado, offset ' + offsetMs + ' ms)';
 
-            // Contagem regressiva até o ENVIO
-            const start = Date.now();
+            // Contagem regressiva até o ENVIO (visual)
+            const baseNow = Date.now();
+            const startPerf = performance.now();
             countdownInterval = setInterval(function () {
-                const elapsed = Date.now() - start;
-                const remaining = delayMs - elapsed;
+                const nowEst = baseNow + (performance.now() - startPerf);
+                const remaining = sendTimeMs - nowEst;
                 if (remaining <= 0) {
                     clearInterval(countdownInterval);
                     countdownInterval = null;
@@ -234,25 +265,33 @@
                 const msStr = String(ms).padStart(3, '0');
                 status.textContent =
                     'Envio em: ' + h + ':' + m + ':' + s + '.' + msStr +
-                    ' | Chegada: ' + targetArrival.toLocaleTimeString();
+                    ' | Chegada: ' + targetArrival.toLocaleTimeString() +
+                    ' | Offset: ' + offsetMs + ' ms';
             }, 50);
 
-            // Disparo na hora do ENVIO
-            timerId = setTimeout(function () {
-                if (countdownInterval) {
-                    clearInterval(countdownInterval);
-                    countdownInterval = null;
-                }
-                status.textContent = 'Enviando ataque AGORA...';
-                log('Disparando ataque.');
+            // Disparo mais preciso:
+            //  - Espera grosso (delay - 1500ms)
+            //  - Últimos 1500ms: checagem a cada 5ms
+            const nowForDelay = Date.now();
+            const remainingInitial = sendTimeMs - nowForDelay;
 
-                const btnSend = getAttackButton();
-                if (btnSend) {
-                    btnSend.click();
-                } else {
-                    alert('Agendador: botão de envio não encontrado na hora de disparar.');
-                }
-            }, delayMs);
+            if (remainingInitial <= 2000) {
+                // Jogo curto: já entra direto no loop fino
+                fineInterval = setInterval(function () {
+                    if (Date.now() >= sendTimeMs) {
+                        fire(sendTime, targetArrival);
+                    }
+                }, 5);
+            } else {
+                const coarseDelay = remainingInitial - 1500;
+                coarseTimeout = setTimeout(function () {
+                    fineInterval = setInterval(function () {
+                        if (Date.now() >= sendTimeMs) {
+                            fire(sendTime, targetArrival);
+                        }
+                    }, 5);
+                }, coarseDelay);
+            }
         });
 
         log('UI de agendamento criada.');
@@ -266,5 +305,5 @@
         createSchedulerUI();
     }
 
-    init(); // chamado quando o script é carregado via quickbar
+    init();
 })();
