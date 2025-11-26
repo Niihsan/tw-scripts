@@ -74,17 +74,16 @@
         box.style.background = '#f5e4c8';
         box.style.fontSize = '11px';
 
-        box.innerHTML = `
-            <strong>Agendar envio de ataque (hora do servidor)</strong><br>
-            Horário alvo (HH:MM:SS): 
-            <input type="text" id="tw-attack-time" value="" style="width:80px; font-size:11px;">
-            <button type="button" id="tw-attack-schedule" style="font-size:11px; margin-left:4px;">
-                Agendar
-            </button>
-            <div id="tw-attack-status" style="margin-top:4px; font-size:11px; color:#804000;">
-                Aguardando horário...
-            </div>
-        `;
+        box.innerHTML =
+            '<strong>Agendar envio de ataque (hora do servidor)</strong><br>' +
+            'Horário alvo (HH:MM:SS): ' +
+            '<input type="text" id="tw-attack-time" style="width:80px; font-size:11px;">' +
+            '<button type="button" id="tw-attack-schedule" style="font-size:11px; margin-left:4px;">' +
+            'Agendar' +
+            '</button>' +
+            '<div id="tw-attack-status" style="margin-top:4px; font-size:11px; color:#804000;">' +
+            'Aguardando horário...' +
+            '</div>';
 
         confirmBtn.parentElement.appendChild(box);
 
@@ -175,7 +174,9 @@
                 if (btnToClick) {
                     btnToClick.click();
                 } else {
-                    alert('Agendador: não encontrei o botão de envio na hora de disparar.');
+                    alert(
+                        'Agendador: não encontrei o botão de envio na hora de disparar.'
+                    );
                 }
             }, delayMs);
         });
@@ -191,10 +192,6 @@
         createSchedulerUI();
     }
 
-    // já que é carregado via <script>, o DOM geralmente já está pronto
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
-    }
+    // Chamamos direto, porque o script é injetado depois da página carregar
+    init();
 })();
