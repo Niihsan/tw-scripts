@@ -34,7 +34,6 @@
 
     // -------------------------------
     // DETECTAR TELA DE CONFIRMAÇÃO
-    // (funciona mesmo popup no mapa)
     // -------------------------------
     function isConfirmScreen() {
         if (!getAttackButton()) return false;
@@ -43,34 +42,31 @@
     }
 
     // -------------------------------
-    // HORA DO SERVIDOR
+    // HORA DO SERVIDOR (só HH:MM:SS)
     // -------------------------------
-    function getServerDateTime() {
-        const dateEl = document.querySelector('#serverDate');
+    function getServerHMS() {
         const timeEl = document.querySelector('#serverTime');
-
-        if (!dateEl || !timeEl) {
-            log('Não encontrei #serverDate ou #serverTime');
-            return null;
-        }
-
-        const dateStr = dateEl.textContent.trim(); // 26/11/2025 ou 26.11.2025
+        if (!timeEl) return null;
         const timeStr = timeEl.textContent.trim(); // 02:39:54
+        const parts = timeStr.split(':');
+        if (parts.length !== 3) return null;
+        const hh = parseInt(parts[0], 10);
+        const mm = parseInt(parts[1], 10);
+        const ss = parseInt(parts[2], 10);
+        if (isNaN(hh) || isNaN(mm) || isNaN(ss)) return null;
+        return { hh, mm, ss };
+    }
 
-        const [day, month, year] = dateStr.includes('.')
-            ? dateStr.split('.')
-            : dateStr.split('/');
+    function hmsToSec(hh, mm, ss) {
+        return ((hh * 60) + mm) * 60 + ss;
+    }
 
-        const [hh, mm, ss] = timeStr.split(':').map(Number);
-
-        return new Date(
-            Number(year),
-            Number(month) - 1,
-            Number(day),
-            Number(hh),
-            Number(mm),
-            Number(ss)
-        );
+    function formatTime(hh, mm, ss, ms) {
+        const H = String(hh).padStart(2, '0');
+        const M = String(mm).padStart(2, '0');
+        const S = String(ss).padStart(2, '0');
+        const MS = String(ms || 0).padStart(3, '0');
+        return H + ':' + M + ':' + S + '.' + MS;
     }
 
     // -------------------------------
@@ -143,7 +139,8 @@
             'style="width:110px; font-size:11px;">' +
             '&nbsp;Offset envio (ms, negativo = mais cedo): ' +
             '<input type="text" id="tw-attack-offset" value="-600" ' +
-            'style="width:60px; font-size:11px;" title="Ajuste fino. Ex: -600 = envia 0,6s antes.">' +
+            'style="width:60px; font-size:11px;" ' +
+            'title="Ajuste fino. Ex: -600 = envia ~0,6s antes.">' +
             '<button type="button" id="tw-attack-schedule" ' +
             'style="font-size:11px; margin-left:4px;">Agendar</button>' +
             '<div id="tw-attack-status" ' +
@@ -177,12 +174,11 @@
             }
         }
 
-        function fire(sendTime, targetArrival) {
+        function fire() {
             if (fired) return;
             fired = true;
             clearTimers();
             status.textContent = 'Enviando ataque AGORA...';
-            log('Disparando ataque. Envio calculado:', sendTime.toISOString(), 'Chegada:', targetArrival.toISOString());
             const btnSend = getAttackButton();
             if (btnSend) {
                 btnSend.click();
@@ -202,11 +198,11 @@
                 return;
             }
 
-            let offsetMs = Number(inputOffset.value.replace(',', '.'));
+            let offsetMs = Number((inputOffset.value || '').replace(',', '.'));
             if (isNaN(offsetMs)) offsetMs = 0;
 
-            const serverNow = getServerDateTime();
-            if (!serverNow) {
+            const serverHMS = getServerHMS();
+            if (!serverHMS) {
                 alert('Não foi possível ler a hora do servidor.');
                 return;
             }
@@ -217,40 +213,56 @@
                 return;
             }
 
-            // Chegada desejada: mesmo dia do servidor, horário escolhido
-            const targetArrival = new Date(serverNow.getTime());
-            targetArrival.setHours(parsed.hh, parsed.mm, parsed.ss, parsed.ms);
+            const nowSec = hmsToSec(serverHMS.hh, serverHMS.mm, serverHMS.ss);
 
-            // Se já passou, joga para o próximo dia
-            if (targetArrival <= serverNow) {
-                targetArrival.setDate(targetArrival.getDate() + 1);
+            // chegada desejada em segundos + ms (no "dia do servidor")
+            const arrivalSecBase = hmsToSec(parsed.hh, parsed.mm, parsed.ss);
+            let arrivalSec = arrivalSecBase;
+            if (arrivalSec <= nowSec) {
+                arrivalSec += 24 * 3600; // próximo dia
+            }
+            const arrivalMsTotal = arrivalSec * 1000 + (parsed.ms || 0);
+
+            // envio = chegada - duração + offset
+            let sendMsTotal = arrivalMsTotal - durationMs + offsetMs;
+
+            // segundos de envio (para exibir HH:MM:SS.mmm relativos ao servidor)
+            let sendSecTotal = Math.floor(sendMsTotal / 1000);
+            let sendMs = ((sendMsTotal % 1000) + 1000) % 1000;
+
+            // normaliza dentro de 0–24h
+            let sendSecDay = ((sendSecTotal % (24 * 3600)) + (24 * 3600)) % (24 * 3600);
+            const sendH = Math.floor(sendSecDay / 3600);
+            const sendM = Math.floor((sendSecDay % 3600) / 60);
+            const sendS = sendSecDay % 60;
+
+            // delay a partir de agora (em ms)
+            const nowMsTotal = nowSec * 1000; // referência do servidor
+            let delayMs = sendMsTotal - nowMsTotal;
+            while (delayMs <= 0) {
+                delayMs += 24 * 3600 * 1000; // próximo dia, segurança
             }
 
-            // Hora de envio = chegada - duração + offset
-            const sendTimeMs = targetArrival.getTime() - durationMs + offsetMs;
-            const sendTime = new Date(sendTimeMs);
+            log('Servidor agora (H:M:S):', serverHMS, 'seg:', nowSec);
+            log('Chegada alvo segundos-base:', arrivalSecBase, 'totalMs:', arrivalMsTotal);
+            log('Envio em', delayMs, 'ms. Hora de envio (srv):', formatTime(sendH, sendM, sendS, sendMs),
+                'Chegada (srv):', formatTime(parsed.hh, parsed.mm, parsed.ss, parsed.ms || 0),
+                'Offset:', offsetMs, 'ms');
 
-            if (sendTime <= serverNow) {
-                alert('Essa chegada é impossível: a hora de envio já passou (mesmo com offset).');
-                return;
-            }
-
-            const delayMs = sendTimeMs - serverNow.getTime();
-
-            log('Chegada desejada:', targetArrival.toString());
-            log('Envio programado:', sendTime.toString(), 'em', delayMs, 'ms. Offset:', offsetMs, 'ms');
+            const arrivalStr = formatTime(parsed.hh, parsed.mm, parsed.ss, parsed.ms || 0);
+            const sendStr = formatTime(sendH, sendM, sendS, sendMs);
 
             status.textContent =
-                'Chegada: ' + targetArrival.toLocaleString() +
-                ' | Envio: ' + sendTime.toLocaleTimeString() +
-                ' (programado, offset ' + offsetMs + ' ms)';
+                'Chegada alvo: ' + arrivalStr +
+                ' | Envio (calculado): ' + sendStr +
+                ' | Offset: ' + offsetMs + ' ms';
 
-            // Contagem regressiva até o ENVIO (visual)
+            // Contagem regressiva baseada no relógio local, mas usando delayMs
             const baseNow = Date.now();
             const startPerf = performance.now();
             countdownInterval = setInterval(function () {
                 const nowEst = baseNow + (performance.now() - startPerf);
-                const remaining = sendTimeMs - nowEst;
+                const remaining = delayMs - (nowEst - baseNow);
                 if (remaining <= 0) {
                     clearInterval(countdownInterval);
                     countdownInterval = null;
@@ -265,29 +277,27 @@
                 const msStr = String(ms).padStart(3, '0');
                 status.textContent =
                     'Envio em: ' + h + ':' + m + ':' + s + '.' + msStr +
-                    ' | Chegada: ' + targetArrival.toLocaleTimeString() +
+                    ' | Chegada alvo: ' + arrivalStr +
+                    ' | Envio calc.: ' + sendStr +
                     ' | Offset: ' + offsetMs + ' ms';
             }, 50);
 
-            // Disparo mais preciso:
-            //  - Espera grosso (delay - 1500ms)
-            //  - Últimos 1500ms: checagem a cada 5ms
-            const nowForDelay = Date.now();
-            const remainingInitial = sendTimeMs - nowForDelay;
+            // Disparo: grosso + fino
+            const nowReal = Date.now();
+            const remainingInitial = delayMs;
 
             if (remainingInitial <= 2000) {
-                // Jogo curto: já entra direto no loop fino
                 fineInterval = setInterval(function () {
-                    if (Date.now() >= sendTimeMs) {
-                        fire(sendTime, targetArrival);
+                    if (Date.now() - nowReal >= delayMs) {
+                        fire();
                     }
                 }, 5);
             } else {
                 const coarseDelay = remainingInitial - 1500;
                 coarseTimeout = setTimeout(function () {
                     fineInterval = setInterval(function () {
-                        if (Date.now() >= sendTimeMs) {
-                            fire(sendTime, targetArrival);
+                        if (Date.now() - nowReal >= delayMs) {
+                            fire();
                         }
                     }, 5);
                 }, coarseDelay);
