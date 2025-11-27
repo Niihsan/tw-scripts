@@ -1,16 +1,16 @@
 (function () {
     'use strict';
 
-    const LOG_PREFIX = '[TW Agendar Chegada]';
+    const LOG_PREFIX = '[TW Agendar Chegada ATQ/APO]';
 
     function log() {
         console.log.apply(console, [LOG_PREFIX].concat(Array.from(arguments)));
     }
 
     // -------------------------------
-    // BOTÃO "ENVIAR ATAQUE" (pra UI)
+    // BOTÃO "ENVIAR" (ataque/apoio)
     // -------------------------------
-    function getAttackButton() {
+    function getConfirmButton() {
         // 1) ID clássico
         let b = document.querySelector('#troop_confirm_go');
         if (b) return b;
@@ -19,25 +19,28 @@
         b = document.querySelector('.btn-confirm-attack');
         if (b) return b;
 
-        // 3) Input com value exato
-        b = document.querySelector('input[type=submit][value="Enviar ataque"]');
+        // 3) Inputs com value "Enviar ataque" ou "Enviar apoio"
+        b = document.querySelector(
+            'input[type=submit][value="Enviar ataque"], input[type=submit][value="Enviar apoio"]'
+        );
         if (b) return b;
 
-        // 4) Qualquer botão/input com texto "Enviar ataque"
+        // 4) Qualquer botão/input com texto contendo "enviar ataque" ou "enviar apoio"
         const all = document.querySelectorAll('button, input[type=submit]');
         for (const el of all) {
             const txt = (el.textContent || el.value || '').trim().toLowerCase();
-            if (txt.includes('enviar ataque')) return el;
+            if (txt.includes('enviar ataque') || txt.includes('enviar apoio')) {
+                return el;
+            }
         }
         return null;
     }
 
     // -------------------------------
     // FORMULÁRIO DE CONFIRMAÇÃO
-    // (para disparar via submit)
+    // (para disparar via submit, seja ATQ ou APO)
     // -------------------------------
-    function getAttackForm() {
-        // normalmente é o único form do popup
+    function getCommandForm() {
         let f = document.querySelector('form[action*="command"]');
         if (f) return f;
         f = document.querySelector('form');
@@ -46,20 +49,20 @@
 
     // -------------------------------
     // DETECTAR TELA DE CONFIRMAÇÃO
+    // (ataque ou apoio)
     // -------------------------------
     function isConfirmScreen() {
-        if (!getAttackForm()) return false;
-        const txt = (document.body.innerText || '').toLowerCase();
-        return txt.includes('confirmar ataque') || txt.includes('confirm attack');
+        // basta ter form de comando + serverTime
+        return !!getCommandForm() && !!document.querySelector('#serverTime');
     }
 
     // -------------------------------
-    // HORA DO SERVIDOR (só HH:MM:SS)
+    // HORA DO SERVIDOR (HH:MM:SS)
     // -------------------------------
     function getServerHMS() {
         const timeEl = document.querySelector('#serverTime');
         if (!timeEl) return null;
-        const timeStr = timeEl.textContent.trim(); // 02:39:54
+        const timeStr = timeEl.textContent.trim();
         const parts = timeStr.split(':');
         if (parts.length !== 3) return null;
         const hh = parseInt(parts[0], 10);
@@ -83,6 +86,7 @@
 
     // -------------------------------
     // PEGAR "Duração" DO PAINEL
+    // (igual para ataque e apoio)
     // -------------------------------
     function getDurationMs() {
         const tds = document.querySelectorAll('table tr td');
@@ -116,21 +120,21 @@
         const ss = parseInt(m[3], 10);
         let ms = 0;
         if (m[4]) {
-            const pad = (m[4] + '000').slice(0, 3); // normaliza pra 3 dígitos
+            const pad = (m[4] + '000').slice(0, 3);
             ms = parseInt(pad, 10);
         }
         return { hh, mm, ss, ms };
     }
 
     // -------------------------------
-    // UI
+    // UI (ataque + apoio)
     // -------------------------------
     function createSchedulerUI() {
-        const confirmBtn = getAttackButton();
-        const form = getAttackForm();
+        const confirmBtn = getConfirmButton();
+        const form = getCommandForm();
 
         if (!form) {
-            alert('Agendador: não achei o formulário de ataque nesta tela.');
+            alert('Agendador: não achei o formulário de comando nesta tela.');
             return;
         }
 
@@ -147,7 +151,7 @@
         box.style.fontSize = '11px';
 
         box.innerHTML =
-            '<strong>Agendar por HORA DE CHEGADA (hora do servidor)</strong><br>' +
+            '<strong>Agendar por HORA DE CHEGADA (ATAQUE/APOIO - hora do servidor)</strong><br>' +
             'Chegada desejada (HH:MM:SS.mmm): ' +
             '<input type="text" id="tw-attack-time" placeholder="07:39:54.250" ' +
             'style="width:110px; font-size:11px;">' +
@@ -196,9 +200,9 @@
             if (fired) return;
             fired = true;
             clearTimers();
-            status.textContent = 'Enviando ataque AGORA...';
-            log('Submetendo formulário de ataque via submit().');
-            form.submit(); // 🔥 disparo direto, sem click
+            status.textContent = 'Enviando comando AGORA...';
+            log('Submetendo formulário de comando via submit().');
+            form.submit(); // funciona tanto pra ataque quanto pra apoio
         }
 
         btn.addEventListener('click', function () {
@@ -223,7 +227,7 @@
 
             const durationMs = getDurationMs();
             if (durationMs == null) {
-                alert('Não consegui ler a Duração do ataque na tabela.');
+                alert('Não consegui ler a Duração (linha "Duração:" na tabela).');
                 return;
             }
 
@@ -250,7 +254,7 @@
             const sendM = Math.floor((sendSecDay % 3600) / 60);
             const sendS = sendSecDay % 60;
 
-            // delay a partir de agora (em ms) no "dia do servidor"
+            // delay a partir de agora (em ms)
             const nowMsTotal = nowSec * 1000;
             let delayMs = sendMsTotal - nowMsTotal;
             while (delayMs <= 0) {
@@ -315,12 +319,12 @@
             }
         });
 
-        log('UI de agendamento criada.');
+        log('UI de agendamento criada (ataque/apoio).');
     }
 
     function init() {
         if (!isConfirmScreen()) {
-            alert('Agendador: esta tela não parece a de CONFIRMAÇÃO de ataque.');
+            alert('Agendador: esta tela não parece a de CONFIRMAÇÃO de comando (ataque/apoio).');
             return;
         }
         createSchedulerUI();
