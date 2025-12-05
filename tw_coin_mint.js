@@ -1,11 +1,5 @@
 // TW – Painel de Cunhagem de Moedas (Academia)
-// Cunha sempre o MÁXIMO possível e repete a cada X minutos.
-
-// Como funciona:
-// - Painel com "Delay checagem (min)", "Cunhar agora" e "Iniciar loop".
-// - Cada ciclo de loop: envia um POST via fetch com o campo de moedas forçado
-//   para um número bem alto (ex: 999999). O servidor cunha o máximo permitido.
-// - Não recarrega a página, então o loop continua vivo enquanto você ficar na página.
+// Cunha sempre o MÁXIMO possível (ex: "(4) Cunhar") e repete a cada X minutos.
 
 (function () {
     'use strict';
@@ -28,7 +22,6 @@
 
     // Procura o formulário de cunhagem
     function getCoinForm() {
-        // tenta um form mais específico, se existir
         var form = q('form[action*="mode=coin"]') ||
                    q('form[action*="coin"]') ||
                    q('form') ||
@@ -42,13 +35,31 @@
         return form.querySelector('input[name="coin"],input[name="coin_count"],input[type="number"],input[type="text"]');
     }
 
+    // Lê o MÁXIMO de moedas possível a partir do texto "(4) Cunhar"
+    function getMaxCoinsFromPage(form) {
+        if (!form) return null;
+        var els = form.querySelectorAll('td, span, a, button, strong, label, div');
+        for (var i = 0; i < els.length; i++) {
+            var txt = (els[i].textContent || '').trim();
+            if (!txt) continue;
+
+            // formatos: "(4) Cunhar" ou "Cunhar (4)"
+            var m = txt.match(/\((\d+)\)\s*Cunhar/i) || txt.match(/Cunhar\s*\((\d+)\)/i);
+            if (m) {
+                var n = parseInt(m[1], 10);
+                if (!isNaN(n)) return n;
+            }
+        }
+        return null;
+    }
+
     // Envia a requisição de cunhagem via fetch, sem recarregar a página
     function sendMintRequest(form) {
         if (!form) return;
 
         var action = form.action || window.location.href;
         var method = (form.method || 'POST').toUpperCase();
-        if (method !== 'POST') method = 'POST'; // força POST
+        if (method !== 'POST') method = 'POST';
 
         var fd = new FormData(form);
 
@@ -83,10 +94,22 @@
             return;
         }
 
-        // Força um valor bem alto. O servidor vai limitar para o máximo possível.
-        coinInput.value = '999999';
+        // Lê o máximo a partir de "(4) Cunhar"
+        var maxCoins = getMaxCoinsFromPage(form);
+        if (maxCoins === null) {
+            log('Não foi possível detectar o máximo de moedas na página.');
+            return;
+        }
+        if (maxCoins <= 0) {
+            log('Máximo detectado é 0 – sem moedas para cunhar.');
+            return;
+        }
 
-        // Monta e envia a requisição via fetch (sem recarregar a página)
+        // Seta o input exatamente com o máximo detectado (ex: 4)
+        coinInput.value = String(maxCoins);
+        log('Cunhando máximo detectado:', maxCoins);
+
+        // Envia a requisição via fetch (sem recarregar a página)
         sendMintRequest(form);
     }
 
