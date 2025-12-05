@@ -1,5 +1,6 @@
 // TW – Painel de Cunhagem de Moedas (Academia)
-// Cunha sempre o MÁXIMO possível (ex: "(4) Cunhar") e repete a cada X minutos.
+// Cunha sempre o MÁXIMO possível (número entre parênteses ao lado do campo)
+// e repete a cada X minutos sem recarregar a página.
 
 (function () {
     'use strict';
@@ -20,17 +21,18 @@
         } catch (e) {}
     }
 
-    // Formulário de cunhagem
+    // ---- helpers de DOM ----
+
     function getCoinForm() {
-        var form =
+        return (
             q('form[action*="mode=coin"]') ||
             q('form[action*="coin"]') ||
             q('form') ||
-            d.forms[0];
-        return form || null;
+            d.forms[0] ||
+            null
+        );
     }
 
-    // Input de quantidade
     function getCoinInput(form) {
         if (!form) return null;
         return form.querySelector(
@@ -38,7 +40,6 @@
         );
     }
 
-    // Botão de cunhar
     function getCoinButton(form) {
         if (!form) return null;
         return (
@@ -48,43 +49,36 @@
         );
     }
 
-    // Lê o máximo de moedas a partir do botão e/ou texto "(4) Cunhar"
+    // pega o número entre parênteses no mesmo <td> do input
     function getMaxCoinsFromPage(form) {
         if (!form) return null;
+        var input = getCoinInput(form);
+        if (!input) return null;
 
-        // 1) Tenta pelo botão de cunhar (value="Cunhar (4)" ou "(4) Cunhar")
-        var btn = getCoinButton(form);
-        if (btn) {
-            var val = (btn.value || '').trim();
-            var mBtn =
-                val.match(/\((\d+)\)\s*Cunhar/i) ||
-                val.match(/Cunhar\s*\((\d+)\)/i) ||
-                val.match(/(\d+)/);
-            if (mBtn) {
-                var nBtn = parseInt(mBtn[1], 10);
-                if (!isNaN(nBtn)) return nBtn;
+        // normalmente o input fica dentro de um <td> junto com "(4)" e o botão
+        var node = input.parentNode;
+        for (var depth = 0; depth < 3 && node; depth++) {
+            if (node.textContent) {
+                var m = node.textContent.match(/\((\d+)\)/);
+                if (m) {
+                    var n = parseInt(m[1], 10);
+                    if (!isNaN(n)) return n;
+                }
             }
+            node = node.parentNode;
         }
 
-        // 2) Fallback: procura em outros elementos de texto
-        var els = form.querySelectorAll('td, span, a, button, strong, label, div');
-        for (var i = 0; i < els.length; i++) {
-            var txt = (els[i].textContent || '').trim();
-            if (!txt) continue;
-
-            var m =
-                txt.match(/\((\d+)\)\s*Cunhar/i) ||
-                txt.match(/Cunhar\s*\((\d+)\)/i);
-            if (m) {
-                var n = parseInt(m[1], 10);
-                if (!isNaN(n)) return n;
-            }
+        // fallback: procura qualquer "(n)" no form todo
+        var mAll = (form.textContent || '').match(/\((\d+)\)/);
+        if (mAll) {
+            var nAll = parseInt(mAll[1], 10);
+            if (!isNaN(nAll)) return nAll;
         }
 
         return null;
     }
 
-    // Envia o POST via fetch como se tivesse clicado no botão de cunhar
+    // envia POST via fetch simulando clique no botão de cunhar
     function sendMintRequest(form) {
         if (!form) return;
 
@@ -94,7 +88,7 @@
 
         var fd = new FormData(form);
 
-        // Garante que o "botão clicado" esteja presente no POST
+        // garante que o botão "coin" vá no POST
         var btn = getCoinButton(form);
         if (btn && btn.name) {
             fd.append(btn.name, btn.value || '1');
@@ -107,16 +101,22 @@
         })
             .then(function (resp) {
                 log('Cunhagem requisitada. Status:', resp.status);
+                // opcional: avisar visualmente
+                var st = d.getElementById('twCoinStatus');
+                if (st) {
+                    st.textContent = 'Cunhagem enviada (status ' + resp.status + '). Recarregue depois para ver o saldo.';
+                }
             })
             .catch(function (err) {
                 console.error('Erro ao enviar cunhagem:', err);
+                alert('Erro ao enviar cunhagem (veja console).');
             });
     }
 
-    // Cunhar o MÁXIMO possível agora
+    // Tenta cunhar o máximo possível neste momento
     function tryMintMax() {
         if (location.href.indexOf('screen=snob') === -1) {
-            log('Fora da Academia (screen=snob); parando loop se existir.');
+            log('Fora da Academia (screen=snob); parando loop.');
             stopLoop();
             return;
         }
@@ -136,6 +136,7 @@
         var maxCoins = getMaxCoinsFromPage(form);
         if (maxCoins === null) {
             log('Não foi possível detectar o máximo de moedas na página.');
+            alert('Script: não achei o número entre parênteses ao lado do campo (ex: (4)).');
             return;
         }
         if (maxCoins <= 0) {
@@ -149,11 +150,12 @@
         sendMintRequest(form);
     }
 
-    // Controle do loop
+    // ---- controle do loop ----
+
     if (!window.twCoinLoop) {
         window.twCoinLoop = {
             timer: null,
-            delayMs: 10 * 60 * 1000 // padrão: 10 minutos
+            delayMs: 10 * 60 * 1000 // 10 minutos padrão
         };
     }
 
@@ -198,9 +200,11 @@
             bt.textContent = 'Parar loop';
         }
 
-        // Cunha uma vez agora
+        // cunha já uma vez agora
         tryMintMax();
     }
+
+    // ---- painel ----
 
     function createPanel() {
         if (location.href.indexOf('screen=snob') === -1) {
