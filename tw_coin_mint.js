@@ -1,15 +1,21 @@
 // TW – Painel de Cunhagem de Moedas (Academia)
-// Cunha sempre o MÁXIMO possível (número entre parênteses ao lado do campo)
-// e repete a cada X minutos sem recarregar a página.
+// Cunha sempre o MÁXIMO possível e repete a cada X minutos,
+// mostrando no painel o novo total de moedas e o novo "máx" sem recarregar a página.
 
 (function () {
     'use strict';
 
-    // Evitar inicializar duas vezes
+    // Evita inicializar duas vezes
     if (window.twCoinPanelInit) return;
     window.twCoinPanelInit = true;
 
     var d = document;
+
+    // estado global para guardar info vinda da última resposta
+    window.twCoinState = window.twCoinState || {
+        maxOverride: null,
+        lastTotal: null
+    };
 
     function q(sel, ctx) {
         return (ctx || d).querySelector(sel);
@@ -21,7 +27,7 @@
         } catch (e) {}
     }
 
-    // ---- helpers de DOM ----
+    // ---------- helpers DOM da página atual ----------
 
     function getCoinForm() {
         return (
@@ -49,13 +55,12 @@
         );
     }
 
-    // pega o número entre parênteses no mesmo <td> do input
-    function getMaxCoinsFromPage(form) {
+    // pega o número entre parênteses no mesmo <td> do input (ex: "(4)")
+    function getMaxCoinsFromDOM(form) {
         if (!form) return null;
         var input = getCoinInput(form);
         if (!input) return null;
 
-        // normalmente o input fica dentro de um <td> junto com "(4)" e o botão
         var node = input.parentNode;
         for (var depth = 0; depth < 3 && node; depth++) {
             if (node.textContent) {
@@ -68,7 +73,7 @@
             node = node.parentNode;
         }
 
-        // fallback: procura qualquer "(n)" no form todo
+        // fallback: qualquer "(n)" no form
         var mAll = (form.textContent || '').match(/\((\d+)\)/);
         if (mAll) {
             var nAll = parseInt(mAll[1], 10);
@@ -78,7 +83,54 @@
         return null;
     }
 
-    // envia POST via fetch simulando clique no botão de cunhar
+    // usa override se existir, senão lê do DOM
+    function getMaxCoins(form) {
+        if (
+            window.twCoinState &&
+            typeof window.twCoinState.maxOverride === 'number'
+        ) {
+            return window.twCoinState.maxOverride;
+        }
+        return getMaxCoinsFromDOM(form);
+    }
+
+    // ---------- parse da resposta HTML do servidor ----------
+
+    function updateStateFromHtml(html) {
+        // novo total de moedas: procura "Moedas de ouro ... Total: </td><td>415"
+        var totalMatch = html.match(
+            /Moedas de ouro[\s\S]*?Total:\s*<\/td>\s*<td[^>]*>(\d+)<\/td>/i
+        );
+        if (totalMatch) {
+            window.twCoinState.lastTotal = parseInt(totalMatch[1], 10);
+        }
+
+        // novo "máx": algum "(n)" perto de "Cunhar moedas de ouro" ou de "Cunhar"
+        var maxMatch =
+            html.match(/Cunhar moedas de ouro[\s\S]*?\((\d+)\)/i) ||
+            html.match(/\((\d+)\)\s*Cunhar/i);
+        if (maxMatch) {
+            window.twCoinState.maxOverride = parseInt(maxMatch[1], 10);
+        }
+
+        var st = d.getElementById('twCoinStatus');
+        if (st) {
+            var parts = [];
+            if (window.twCoinState.lastTotal != null) {
+                parts.push('Total: ' + window.twCoinState.lastTotal);
+            }
+            if (window.twCoinState.maxOverride != null) {
+                parts.push('Máx atual: ' + window.twCoinState.maxOverride);
+            }
+            if (parts.length) {
+                st.textContent = 'Última cunhagem OK. ' + parts.join(' | ');
+                st.style.color = 'green';
+            }
+        }
+    }
+
+    // ---------- envio da cunhagem via fetch ----------
+
     function sendMintRequest(form) {
         if (!form) return;
 
@@ -88,7 +140,7 @@
 
         var fd = new FormData(form);
 
-        // garante que o botão "coin" vá no POST
+        // simula o clique no botão "coin"
         var btn = getCoinButton(form);
         if (btn && btn.name) {
             fd.append(btn.name, btn.value || '1');
@@ -100,12 +152,10 @@
             credentials: 'same-origin'
         })
             .then(function (resp) {
-                log('Cunhagem requisitada. Status:', resp.status);
-                // opcional: avisar visualmente
-                var st = d.getElementById('twCoinStatus');
-                if (st) {
-                    st.textContent = 'Cunhagem enviada (status ' + resp.status + '). Recarregue depois para ver o saldo.';
-                }
+                return resp.text().then(function (html) {
+                    log('Cunhagem requisitada. Status:', resp.status);
+                    updateStateFromHtml(html);
+                });
             })
             .catch(function (err) {
                 console.error('Erro ao enviar cunhagem:', err);
@@ -113,7 +163,8 @@
             });
     }
 
-    // Tenta cunhar o máximo possível neste momento
+    // ---------- cunhar máximo agora ----------
+
     function tryMintMax() {
         if (location.href.indexOf('screen=snob') === -1) {
             log('Fora da Academia (screen=snob); parando loop.');
@@ -133,14 +184,16 @@
             return;
         }
 
-        var maxCoins = getMaxCoinsFromPage(form);
-        if (maxCoins === null) {
-            log('Não foi possível detectar o máximo de moedas na página.');
-            alert('Script: não achei o número entre parênteses ao lado do campo (ex: (4)).');
+        var maxCoins = getMaxCoins(form);
+        if (maxCoins == null) {
+            log('Não foi possível detectar o máximo de moedas.');
+            alert(
+                'Script: não achei o número máximo de moedas no HTML. Verifique se há um "(n)" ao lado do campo.'
+            );
             return;
         }
         if (maxCoins <= 0) {
-            log('Máximo detectado é 0 – sem moedas para cunhar.');
+            log('Máx detectado = 0 – sem moedas para cunhar agora.');
             return;
         }
 
@@ -150,12 +203,12 @@
         sendMintRequest(form);
     }
 
-    // ---- controle do loop ----
+    // ---------- loop ----------
 
     if (!window.twCoinLoop) {
         window.twCoinLoop = {
             timer: null,
-            delayMs: 10 * 60 * 1000 // 10 minutos padrão
+            delayMs: 10 * 60 * 1000
         };
     }
 
@@ -164,7 +217,6 @@
             clearInterval(window.twCoinLoop.timer);
             window.twCoinLoop.timer = null;
         }
-
         var st = d.getElementById('twCoinStatus');
         var bt = d.getElementById('twCoinStartStop');
         if (st) {
@@ -178,14 +230,12 @@
 
     function startLoop() {
         stopLoop();
-
         var delayInput = d.getElementById('twCoinDelayMin');
         var minutes = 10;
         if (delayInput) {
             var v = parseFloat(delayInput.value.replace(',', '.'));
             if (!isNaN(v) && v > 0) minutes = v;
         }
-
         var ms = minutes * 60 * 1000;
         window.twCoinLoop.delayMs = ms;
         window.twCoinLoop.timer = setInterval(tryMintMax, ms);
@@ -193,18 +243,19 @@
         var st = d.getElementById('twCoinStatus');
         var bt = d.getElementById('twCoinStartStop');
         if (st) {
-            st.textContent = 'Loop rodando a cada ' + minutes + ' minuto(s)';
+            st.textContent =
+                'Loop rodando a cada ' + minutes + ' minuto(s). Aguardando próxima cunhagem...';
             st.style.color = 'green';
         }
         if (bt) {
             bt.textContent = 'Parar loop';
         }
 
-        // cunha já uma vez agora
+        // cunha uma vez imediatamente
         tryMintMax();
     }
 
-    // ---- painel ----
+    // ---------- painel ----------
 
     function createPanel() {
         if (location.href.indexOf('screen=snob') === -1) {
@@ -229,12 +280,12 @@
         panel.innerHTML =
             '<div style="font-weight:bold;margin-bottom:4px;text-align:center;">Cunhagem de Moedas</div>' +
             '<div style="margin-bottom:4px;">' +
-                'Delay checagem (min): ' +
-                '<input id="twCoinDelayMin" type="number" min="0.1" step="0.1" value="10" style="width:60px;">' +
+            'Delay checagem (min): ' +
+            '<input id="twCoinDelayMin" type="number" min="0.1" step="0.1" value="10" style="width:60px;">' +
             '</div>' +
             '<div style="margin-bottom:4px;">' +
-                '<button id="twCoinMintOnce" style="margin-right:4px;">Cunhar AGORA (máx)</button>' +
-                '<button id="twCoinStartStop">Iniciar loop</button>' +
+            '<button id="twCoinMintOnce" style="margin-right:4px;">Cunhar AGORA (máx)</button>' +
+            '<button id="twCoinStartStop">Iniciar loop</button>' +
             '</div>' +
             '<div id="twCoinStatus" style="font-weight:bold;color:red;">Loop parado</div>';
 
@@ -260,5 +311,4 @@
     } else {
         d.addEventListener('DOMContentLoaded', createPanel);
     }
-
 })();
