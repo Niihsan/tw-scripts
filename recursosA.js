@@ -15,26 +15,25 @@
         intervalMs: 30000 // padrão 30s
     };
 
-    var warehouseCapacity = [];
-    var allWoodTotals = [];
-    var allClayTotals = [];
-    var allIronTotals = [];
-    var availableMerchants = [];
-    var totalMerchants = [];
-    var farmSpaceUsed = [];
-    var farmSpaceTotal = [];
-    var villagesData = [];
-    var allWoodObjects, allClayObjects, allIronObjects, allVillages;
-    var totalsAndAverages = "";
-    var data, totalWood = 0, totalStone = 0, totalIron = 0, resLimit = 0;
-    var sendBack;
-    var totalWoodSent = 0; var totalStoneSent = 0; var totalIronSent = 0;
-    var coordinate, targetID;
+var warehouseCapacity = [];
+var allWoodTotals = [];
+var allClayTotals = [];
+var allIronTotals = [];
+var availableMerchants = [];
+var totalMerchants = [];
+var farmSpaceUsed = [];
+var farmSpaceTotal = [];
+var villagesData = [];
+var allWoodObjects, allClayObjects, allIronObjects, allVillages;
+var totalsAndAverages = "";
+var data, totalWood = 0, totalStone = 0, totalIron = 0, resLimit = 0;
+var sendBack;
+var totalWoodSent = 0, totalStoneSent = 0, totalIronSent = 0;
 
-    if (typeof woodPercentage == 'undefined') {
-        woodPercentage = 28000 / 83000;
-        stonePercentage = 30000 / 83000;
-        ironPercentage = 25000 / 83000;
+// porcentagens fixas para cunhagem (coerente com o original)
+var woodPercentage  = 28000 / 83000;
+var stonePercentage = 30000 / 83000;
+var ironPercentage  = 25000 / 83000;
     }
     // percentages for coins, 83000 is how much all 3 is combined
 
