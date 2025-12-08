@@ -1,12 +1,12 @@
-// Evitar rodar duas vezes
-if (window.rsSenderInit) return;
-window.rsSenderInit = true;
+// Evita rodar 2x na mesma página
+if (window.twResSenderInit) return;
+window.twResSenderInit = true;
 
-// Estado do loop de envios automáticos
-var rsLoop = {
+// >>> ESTADO GLOBAL DO LOOP AUTOMÁTICO
+window.rsLoop = window.rsLoop || {
     timer: null,
-    running: false,
-    intervalMs: 30000 // padrão: 30s
+    intervalMs: 30000,
+    running: false
 };
 
 var warehouseCapacity = [];
@@ -367,7 +367,7 @@ function createList() {
                                 <input type="text" ID="coordinateTarget" name="coordinateTarget" size="20" margin="5" align=left>
                             </td>
                             <td class="sophRowA" align="right">
-                                <input type="text" ID="resPercent" name="resPercent" size="1" align=right>%
+                                <input type="text" ID="resPercent" name="resPercent" size="1" align=right>% 
                             </td>
                             <td class="sophRowA" margin="5">
                                 <button type="button" ID="button" class="btn-confirm-yes" >${langShinko[2]}</button>
@@ -375,21 +375,22 @@ function createList() {
                             <td class="sophRowA">
                                 <button type="button" ID="sendRes" class="btn" name="sendRes" onclick=reDo()> ${langShinko[9]}</button>
                             </td>
-                        </tr>
+                            </tr>
 
-                        <!-- Linha extra: controles do LOOP -->
-                        <tr>
-                            <td class="sophRowB" colspan="2">
-                                Loop (segundos entre envios):
-                                <input type="number" id="rsLoopDelay" min="1" value="30" style="width:60px;">
-                            </td>
-                            <td class="sophRowB">
-                                <button type="button" id="rsLoopToggle" class="btn">Iniciar loop</button>
-                            </td>
-                            <td class="sophRowB">
-                                <span id="rsLoopStatus">Loop parado</span>
-                            </td>
-                        </tr>
+                            <!-- >>> CONTROLES DO LOOP AUTOMÁTICO -->
+                            <tr>
+                                <td class="sophRowB" colspan="2">
+                                    Loop (segundos entre envios): 
+                                    <input type="number" id="rsLoopDelay" min="1" value="30" style="width:60px;">
+                                </td>
+                                <td class="sophRowB">
+                                    <button type="button" id="rsLoopToggle" class="btn">Iniciar loop</button>
+                                </td>
+                                <td class="sophRowB">
+                                    <span id="rsLoopStatus">Loop parado</span>
+                                </td>
+                            </tr>
+                            <!-- <<< FIM CONTROLES LOOP -->
 
                         </tbody>
                     </table>
@@ -492,18 +493,15 @@ function createList() {
     }
     $("#appendHere").eq(0).append(listHTML);
     //      redo the rows appearances cause some are ommited 
-    //      (if you target yourself, you dont want to have the option to send to your own village from that same village, 
-    //      wont work and breaks script, or if you would have to send 0 res, breaks script too)
     sortTableTest(2);
     formatTable();
 
     //put the focus on the first button in the list so the user can start cycling through them
     $(":button,#sendResources")[3].focus();
 
-    // LIGA O BOTÃO DO LOOP
-    $('#rsLoopToggle').off('click').on('click', function (e) {
-        e.preventDefault();
-        if (rsLoop.running) {
+    // >>> WIRING DOS CONTROLES DO LOOP
+    $('#rsLoopToggle').off('click').on('click', function () {
+        if (window.rsLoop.running) {
             stopResLoop();
         } else {
             startResLoop();
@@ -511,25 +509,19 @@ function createList() {
     });
 }
 
-// ====== FUNÇÕES DO LOOP ======
-
-function findNextSendButton() {
-    // pega o primeiro botão "Enviar recursos" habilitado
-    var $btns = $('input#sendResources.btn.evt-confirm-btn.btn-confirm-yes:enabled');
-    if ($btns.length > 0) return $btns.first()[0];
-    return null;
-}
-
+// >>> FUNÇÃO QUE ENVIA O PRÓXIMO DA LISTA (USADA PELO LOOP)
 function rsLoopTick() {
-    var btn = findNextSendButton();
-    if (!btn) {
+    // pega o primeiro botão "Enviar recursos" habilitado
+    var $btn = $(':button[id^="sendResources"]:enabled').first();
+    if ($btn.length === 0) {
         stopResLoop();
-        alert("Finished sending (nenhum botão 'Enviar recursos' restante).");
+        alert("Finished sending (lista vazia).");
         return;
     }
-    btn.click();
+    $btn[0].click();
 }
 
+// >>> INICIAR E PARAR O LOOP
 function startResLoop() {
     var delayInput = document.getElementById('rsLoopDelay');
     var secs = 30;
@@ -537,44 +529,45 @@ function startResLoop() {
         var v = parseInt(delayInput.value, 10);
         if (!isNaN(v) && v > 0) secs = v;
     }
-    if (secs < 1) secs = 1;
+    window.rsLoop.intervalMs = secs * 1000;
 
-    rsLoop.intervalMs = secs * 1000;
-
-    if (rsLoop.timer) clearInterval(rsLoop.timer);
-    rsLoop.timer = setInterval(rsLoopTick, rsLoop.intervalMs);
-    rsLoop.running = true;
-
-    var st = document.getElementById('rsLoopStatus');
-    var bt = document.getElementById('rsLoopToggle');
-    if (st) {
-        st.textContent = 'Loop rodando a cada ' + secs + 's';
-        st.style.color = 'green';
+    if (window.rsLoop.timer) {
+        clearInterval(window.rsLoop.timer);
     }
-    if (bt) bt.textContent = 'Parar loop';
+    window.rsLoop.timer = setInterval(rsLoopTick, window.rsLoop.intervalMs);
+    window.rsLoop.running = true;
+
+    var status = document.getElementById('rsLoopStatus');
+    var btn = document.getElementById('rsLoopToggle');
+    if (status) {
+        status.textContent = 'Loop rodando a cada ' + secs + 's';
+    }
+    if (btn) {
+        btn.textContent = 'Parar loop';
+    }
 
     // dispara o primeiro envio imediatamente
     rsLoopTick();
 }
 
 function stopResLoop() {
-    if (rsLoop.timer) {
-        clearInterval(rsLoop.timer);
-        rsLoop.timer = null;
+    if (window.rsLoop.timer) {
+        clearInterval(window.rsLoop.timer);
+        window.rsLoop.timer = null;
     }
-    rsLoop.running = false;
+    window.rsLoop.running = false;
 
-    var st = document.getElementById('rsLoopStatus');
-    var bt = document.getElementById('rsLoopToggle');
-    if (st) {
-        st.textContent = 'Loop parado';
-        st.style.color = 'red';
+    var status = document.getElementById('rsLoopStatus');
+    var btn = document.getElementById('rsLoopToggle');
+    if (status) {
+        status.textContent = 'Loop parado';
     }
-    if (bt) bt.textContent = 'Iniciar loop';
+    if (btn) {
+        btn.textContent = 'Iniciar loop';
+    }
 }
 
-// ====== RESTO DO SCRIPT ORIGINAL (SEM MUDANÇAS) ======
-
+// resto das funções originais (sendResource, numberWithCommas, etc) inalteradas
 function sendResource(sourceID, targetID, woodAmount, stoneAmount, ironAmount, rowNr) {
     $(':button[id^="sendResources"]').prop('disabled', true);
     setTimeout(function () { $("#" + rowNr)[0].remove(); $(':button[id^="sendResources"]').prop('disabled', false); $(":button,#sendResources")[3].focus(); if($("#tableSend tr").length<=2)
@@ -677,6 +670,9 @@ function askCoordinate() {
     });
 }
 
+
+
+
 function calculateResAmounts(wood, stone, iron, warehouse, merchants) {
     var merchantCarry = merchants * 1000;
     //available to use resources in village and substracting what we wanna leave behind
@@ -687,6 +683,8 @@ function calculateResAmounts(wood, stone, iron, warehouse, merchants) {
     localWood = Math.max(0, localWood);
     localStone = Math.max(0, localStone);
     localIron = Math.max(0, localIron);
+
+
 
     //recalculate how much can be sent according to how much is available
     //how much the merchant can take maximum
