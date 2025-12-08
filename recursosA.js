@@ -15,6 +15,19 @@
         intervalMs: 30000 // padrão 30s
     };
 
+// ─────────────────────────────────────────────────────
+//   BLOCO OBRIGATÓRIO PARA EVITAR ERROS DE VARIÁVEL
+// ─────────────────────────────────────────────────────
+
+// evita rodar duas vezes
+if (!window.rsSenderInit) window.rsSenderInit = true;
+
+// porcentagens fixas para cálculo de transporte
+var woodPercentage  = 28000 / 83000;
+var stonePercentage = 30000 / 83000;
+var ironPercentage  = 25000 / 83000;
+
+// variáveis globais do script
 var warehouseCapacity = [];
 var allWoodTotals = [];
 var allClayTotals = [];
@@ -30,10 +43,12 @@ var data, totalWood = 0, totalStone = 0, totalIron = 0, resLimit = 0;
 var sendBack;
 var totalWoodSent = 0, totalStoneSent = 0, totalIronSent = 0;
 
-// porcentagens fixas para cunhagem (coerente com o original)
-var woodPercentage  = 28000 / 83000;
-var stonePercentage = 30000 / 83000;
-var ironPercentage  = 25000 / 83000;
+// variáveis do loop automático
+var rsLoop = {
+    running: false,
+    timer: null,
+    intervalMs: 60000
+};
     }
     // percentages for coins, 83000 is how much all 3 is combined
 
