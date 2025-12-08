@@ -1,26 +1,13 @@
-(function () {
-    'use strict';
-
-    // Evitar rodar duas vezes
-    if (window.rsSenderInit) {
-        console.log('recursosA já carregado');
-        return;
-    }
+// Evitar rodar duas vezes (sem usar return)
+if (window.rsSenderInit) {
+    console.log('recursosA já carregado');
+} else {
     window.rsSenderInit = true;
+}
 
-    // Estado do loop de envios automáticos
-    var rsLoop = {
-        timer: null,
-        running: false,
-        intervalMs: 30000 // padrão 30s
-    };
-
-// ─────────────────────────────────────────────────────
-//   BLOCO OBRIGATÓRIO PARA EVITAR ERROS DE VARIÁVEL
-// ─────────────────────────────────────────────────────
-
-// evita rodar duas vezes
-if (!window.rsSenderInit) window.rsSenderInit = true;
+// ───────────────────────────────────────────────
+//   CONFIG BÁSICA E VARIÁVEIS GLOBAIS
+// ───────────────────────────────────────────────
 
 // porcentagens fixas para cálculo de transporte
 var woodPercentage  = 28000 / 83000;
@@ -42,14 +29,15 @@ var totalsAndAverages = "";
 var data, totalWood = 0, totalStone = 0, totalIron = 0, resLimit = 0;
 var sendBack;
 var totalWoodSent = 0, totalStoneSent = 0, totalIronSent = 0;
+var coordinate, targetID;
 
-// variáveis do loop automático
+// loop automático para os envios
 var rsLoop = {
-    running: false,
     timer: null,
-    intervalMs: 60000
+    running: false,
+    intervalMs: 30000 // padrão 30s
 };
-    }
+
     // percentages for coins, 83000 is how much all 3 is combined
 
     var backgroundColor = "#36393f";
