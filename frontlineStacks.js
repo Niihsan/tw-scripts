@@ -3,7 +3,7 @@
 
   const SCRIPT = {
     name: 'Frontline Stacks Planner',
-    version: 'member-fix-colshift-only',
+    version: 'member-ui-multitribe + robust-units-parser',
     prefix: 'ra_frontline_member',
   };
 
@@ -61,13 +61,14 @@
   function parseCSV(text) { return text.trim().split('\n').map((l) => l.split(',')); }
   async function fetchText(url) { return $.ajax({ url, method: 'GET' }); }
 
-  // ===== UI =====
+  // ========= UI =========
   const style = `
     #${SCRIPT.prefix}{ border:1px solid #603000; background:#f4e4bc; margin:10px 0 15px; }
     #${SCRIPT.prefix} *{ box-sizing:border-box; }
     #${SCRIPT.prefix} .hdr{ background:#c1a264 url(/graphic/screen/tableheader_bg3.png) repeat-x; padding:10px; display:flex; align-items:center; justify-content:space-between; }
     #${SCRIPT.prefix} .hdr h3{ margin:0; padding:0; font-size:18px; }
-    #${SCRIPT.prefix} .sub{ padding:8px 10px; font-size:13px; opacity:.9; }
+    #${SCRIPT.prefix} .sub{ padding:8px 10px; font-size:13px; opacity:.9; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    #${SCRIPT.prefix} .pill{ padding:2px 8px; border:1px solid #8a6a2f; background:#f7ebcf; border-radius:999px; font-weight:700; font-size:12px; }
     #${SCRIPT.prefix} .body{ padding:10px; }
     #${SCRIPT.prefix} label{ display:block; font-weight:700; margin:0 0 6px; font-size:14px; }
     #${SCRIPT.prefix} input[type="text"], #${SCRIPT.prefix} input[type="number"]{
@@ -77,7 +78,7 @@
     #${SCRIPT.prefix} .gridReq{ display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; align-items:end; }
     #${SCRIPT.prefix} .unitBox{ display:flex; gap:8px; align-items:center; }
     #${SCRIPT.prefix} .unitBox img{ width:20px; height:20px; }
-    #${SCRIPT.prefix} .btnRow{ margin-top:10px; display:flex; gap:10px; }
+    #${SCRIPT.prefix} .btnRow{ margin-top:10px; display:flex; gap:10px; flex-wrap:wrap; }
     #${SCRIPT.prefix} .btn{ display:inline-block; padding:4px 10px; font-size:13px; }
     #${SCRIPT.prefix} .tblWrap{ margin-top:12px; max-height:520px; overflow:auto; border:1px solid #bd9c5a; }
     #${SCRIPT.prefix} table{ width:100%; border-collapse:collapse; font-size:14px; }
@@ -87,6 +88,20 @@
     #${SCRIPT.prefix} .right{ text-align:right; }
     #${SCRIPT.prefix} .small{ font-size:12px; opacity:.9; }
     @media (max-width: 900px){ #${SCRIPT.prefix} .grid4{ grid-template-columns:1fr; } #${SCRIPT.prefix} .gridReq{ grid-template-columns:1fr 1fr; } }
+
+    /* Modal */
+    #${SCRIPT.prefix}_modalMask{ position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:99998; display:none; }
+    #${SCRIPT.prefix}_modal{ position:fixed; left:50%; top:10%; transform:translateX(-50%); width:min(820px, 92vw); max-height:78vh; overflow:auto;
+      background:#f4e4bc; border:2px solid #603000; z-index:99999; display:none; }
+    #${SCRIPT.prefix}_modal .mHdr{ padding:10px; background:#c1a264 url(/graphic/screen/tableheader_bg3.png) repeat-x; display:flex; align-items:center; justify-content:space-between; }
+    #${SCRIPT.prefix}_modal .mHdr b{ font-size:16px; }
+    #${SCRIPT.prefix}_modal .mBody{ padding:10px; }
+    #${SCRIPT.prefix}_modal .mRow{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    #${SCRIPT.prefix}_modal .list{ margin-top:10px; border:1px solid #bd9c5a; background:#fff7e1; }
+    #${SCRIPT.prefix}_modal .list .item{ display:flex; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid #e0c48b; }
+    #${SCRIPT.prefix}_modal .list .item:last-child{ border-bottom:none; }
+    #${SCRIPT.prefix}_modal .tag{ font-weight:800; min-width:80px; }
+    #${SCRIPT.prefix}_modal .name{ opacity:.9; }
   `;
 
   function unitImg(unit) { return `/graphic/unit/unit_${unit}.png`; }
@@ -109,12 +124,17 @@
           <h3>${SCRIPT.name}</h3>
           <div class="small"><b>${SCRIPT.version}</b></div>
         </div>
-        <div class="sub">member • lendo <b>"Na aldeia"</b> do overview (inclui apoios)</div>
+        <div class="sub">
+          <span class="pill">member</span>
+          <span>lendo <b>"Na aldeia"</b> do overview (inclui apoios)</span>
+          <span class="pill" id="raTribesPill">tribos: (nenhuma)</span>
+          <a class="btn" href="javascript:void(0)" id="raPickTribes">Selecionar tribos</a>
+        </div>
         <div class="body">
           <div class="grid4">
             <div>
-              <label>Select enemy tribes</label>
-              <input id="raEnemyTags" type="text" placeholder="Ex: [BO]" />
+              <label>Tribos inimigas (selecionadas)</label>
+              <input id="raEnemyTags" type="text" placeholder="(use o botão Selecionar tribos)" disabled />
             </div>
             <div>
               <label>Distance</label>
@@ -148,6 +168,30 @@
           <div class="tblWrap" id="raOut" style="display:none;"></div>
         </div>
       </div>
+
+      <div id="${SCRIPT.prefix}_modalMask"></div>
+      <div id="${SCRIPT.prefix}_modal">
+        <div class="mHdr">
+          <b>Selecionar tribos inimigas (multi)</b>
+          <a class="btn" href="javascript:void(0)" id="raCloseModal">Fechar</a>
+        </div>
+        <div class="mBody">
+          <div class="mRow">
+            <div style="flex:1; min-width:220px;">
+              <label>Filtrar</label>
+              <input id="raTribeFilter" type="text" placeholder="ex: BO / nome da tribo..." />
+            </div>
+            <div style="display:flex; gap:10px; align-items:flex-end;">
+              <a class="btn" href="javascript:void(0)" id="raSelectAllShown">Marcar exibidas</a>
+              <a class="btn" href="javascript:void(0)" id="raClearAll">Limpar</a>
+              <a class="btn" href="javascript:void(0)" id="raApplyTribes"><b>Aplicar</b></a>
+            </div>
+          </div>
+          <div class="small" style="margin-top:6px;">Dica: você pode selecionar várias tribos e o script vai considerar todas.</div>
+          <div class="list" id="raTribeList"></div>
+        </div>
+      </div>
+
       <style>${style}</style>
     `;
 
@@ -156,30 +200,25 @@
     else $('#content_value').prepend(html);
   }
 
-  function readInputs() {
-    const tagsRaw = ($('#raEnemyTags').val() || '').trim();
-    const distance = Math.max(0, Number($('#raDistance').val()) || 0);
-    const stackLimitK = Math.max(0, Number($('#raStackLimit').val()) || 0);
-    const scaleDownK = Math.max(0, Number($('#raScaleDown').val()) || 0);
-
-    if (!tagsRaw) return { error: 'Informe ao menos uma tag inimiga (ex: [BO]).' };
-
-    // (mantém simples como antes) aceita [BO] ou BO
-    const tags = tagsRaw
-      .split(',')
-      .map(t => t.trim())
-      .filter(Boolean);
-
-    const req = {};
-    $('.raReq').each(function () {
-      const u = $(this).data('unit');
-      req[u] = Math.max(0, Number($(this).val()) || 0);
-    });
-
-    return { tags, distance, stackLimitK, scaleDownK, req };
+  // ===== Persistência simples =====
+  const LS_KEY = `${SCRIPT.prefix}:selectedTags`;
+  function loadSelectedTags() {
+    try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); }
+    catch { return []; }
+  }
+  function saveSelectedTags(tags) {
+    localStorage.setItem(LS_KEY, JSON.stringify(tags || []));
   }
 
-  // ===== Overview reader =====
+  let selectedTags = loadSelectedTags(); // array de strings "BO" sem colchetes
+
+  function updateSelectedTagsUI() {
+    const text = selectedTags.length ? selectedTags.map(t => `[${t}]`).join(', ') : '(nenhuma)';
+    $('#raEnemyTags').val(text);
+    $('#raTribesPill').text(`tribos: ${selectedTags.length ? selectedTags.join(', ') : '(nenhuma)'}`);
+  }
+
+  // ========= Overview reader (FIX ROBUSTO: não usa índice de coluna) =========
   function pickUnitsTableFromHTML(doc) {
     const $tables = $(doc).find('table.vis');
     if (!$tables.length) return null;
@@ -204,18 +243,18 @@
     return null;
   }
 
-  function buildUnitColumnMapFromHeaderRow($headerRow) {
-    const unitColIdx = {};
+  // ordem real das unidades pelo header (spear/sword/axe/spy/light/heavy/ram/catapult/knight/snob...)
+  function headerUnitsInOrder($headerRow) {
+    const units = [];
     const cells = $headerRow.children('th,td');
-    cells.each(function (i) {
+    cells.each(function () {
       const $img = $(this).find('img[src*="/graphic/unit/unit_"]').first();
-      if ($img.length) {
-        const src = $img.attr('src') || '';
-        const m = src.match(/unit_([a-z_]+)\.(png|webp)/i);
-        if (m) unitColIdx[m[1]] = i;
-      }
+      if (!$img.length) return;
+      const src = $img.attr('src') || '';
+      const m = src.match(/unit_([a-z_]+)\.(png|webp)/i);
+      if (m) units.push(m[1]);
     });
-    return unitColIdx;
+    return units;
   }
 
   function isNaAldeiaRow($r) {
@@ -258,23 +297,27 @@
     return null;
   }
 
-  // ===========================
-  // ✅ FIX ÚNICO IMPORTANTE: COLUNA DESLOCADA
-  // ===========================
-  function readTroopsFromRow_FIXED($r, unitColIdx, headerCellCount) {
-    const cells = $r.children('td,th');
+  // ✅ FIX DEFINITIVO: pega APENAS células numéricas e mapeia na ordem do header
+  function readTroopsFromNaAldeiaRow_BY_NUMERIC_SEQUENCE($r, headerUnits) {
+    const cells = $r.children('td,th').toArray().map(td => $(td));
+
+    // remove 1ª célula (label "Na aldeia")
+    const rest = cells.slice(1);
+
+    // pega somente células que realmente tenham número
+    const nums = [];
+    for (const $c of rest) {
+      // ignora células de ação/link "Tropas/Comandos" etc (normalmente sem números)
+      const txt = ($c.text() || '').replace(/\s+/g, ' ').trim();
+      const n = cleanInt(txt);
+      // considera numérica se tiver pelo menos 1 dígito no texto
+      if (/\d/.test(txt)) nums.push(n);
+    }
+
     const troops = {};
-
-    // Se a linha de dados tem mais colunas que o header, ajusta o índice
-    // (isso é o que estava “pulando coluna” e trocando spear/sword/axe/heavy)
-    const delta = Math.max(0, cells.length - headerCellCount);
-
-    Object.keys(unitColIdx).forEach((unit) => {
-      const idx = unitColIdx[unit];
-      const realIdx = idx + delta;
-      troops[unit] = cleanInt(cells.eq(realIdx).text());
-    });
-
+    for (let i = 0; i < headerUnits.length; i++) {
+      troops[headerUnits[i]] = nums[i] != null ? nums[i] : 0;
+    }
     return troops;
   }
 
@@ -291,12 +334,14 @@
     const $hdr = findHeaderRowWithUnitIcons($t);
     if (!$hdr) throw new Error('Não achei o cabeçalho de unidades.');
 
-    const unitColIdx = buildUnitColumnMapFromHeaderRow($hdr);
-    const headerCellCount = $hdr.children('th,td').length;
+    const hUnits = headerUnitsInOrder($hdr);
+    if (!hUnits.length) throw new Error('Cabeçalho sem unidades.');
 
+    // garantia mínima (pra não dar leitura maluca)
     const must = ['spear', 'sword', 'heavy'];
-    const miss = must.filter((u) => unitColIdx[u] == null);
-    if (miss.length) throw new Error(`Cabeçalho sem colunas: ${miss.join(', ')}`);
+    for (const u of must) {
+      if (!hUnits.includes(u)) throw new Error(`Cabeçalho não contém ${u}.`);
+    }
 
     const rows = $t.find('tr').toArray().map((r) => $(r));
     const villagesByKey = new Map();
@@ -308,8 +353,7 @@
       const vh = findVillageHeaderAbove(rows, i);
       if (!vh) continue;
 
-      // usa o FIX de colunas (única alteração real)
-      const troops = readTroopsFromRow_FIXED($r, unitColIdx, headerCellCount);
+      const troops = readTroopsFromNaAldeiaRow_BY_NUMERIC_SEQUENCE($r, hUnits);
 
       const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
       villagesByKey.set(key, {
@@ -336,36 +380,16 @@
     return { villages: parseCSV(villTxt), players: parseCSV(plyTxt), allies: parseCSV(allyTxt) };
   }
 
-  // ===========================
-  // ✅ VOLTA A FUNCIONAR COM TAGS COMO ANTES (tolera [BO], BO, espaços)
-  // ===========================
   function normalizeTag(t) {
-    return String(t || '')
-      .trim()
-      .replace(/^\[|\]$/g, '')      // remove colchete nas pontas
-      .replace(/[\[\]]/g, '')       // remove colchetes no meio também
-      .trim()
-      .toLowerCase();
+    return String(t || '').trim().replace(/^\[|\]$/g, '').replace(/[\[\]]/g, '').trim().toUpperCase();
   }
 
-  function tribeIdsFromTags(allies, tags) {
+  function tribeIdsFromSelectedTags(allies, tags) {
     const wanted = new Set(tags.map(normalizeTag).filter(Boolean));
-
-    // 1ª passada: coluna 2 (tag) exata normalizada
-    let ids = allies
+    return allies
       .filter((a) => a[0] && a[2] && wanted.has(normalizeTag(a[2])))
       .map((a) => Number(a[0]))
       .filter(Boolean);
-
-    if (ids.length) return ids;
-
-    // 2ª passada: tenta comparar com o texto original também (caso algum formato estranho)
-    ids = allies
-      .filter((a) => a[0] && a[2] && [...wanted].includes(String(a[2]).trim().toLowerCase()))
-      .map((a) => Number(a[0]))
-      .filter(Boolean);
-
-    return ids;
   }
 
   function playerIdsFromTribeIds(players, tribeIds) {
@@ -488,6 +512,83 @@
     document.body.removeChild(ta);
   }
 
+  function readInputs() {
+    const distance = Math.max(0, Number($('#raDistance').val()) || 0);
+    const stackLimitK = Math.max(0, Number($('#raStackLimit').val()) || 0);
+    const scaleDownK = Math.max(0, Number($('#raScaleDown').val()) || 0);
+
+    if (!selectedTags.length) return { error: 'Selecione ao menos 1 tribo inimiga (botão "Selecionar tribos").' };
+
+    const req = {};
+    $('.raReq').each(function () {
+      const u = $(this).data('unit');
+      req[u] = Math.max(0, Number($(this).val()) || 0);
+    });
+
+    return { tags: selectedTags.slice(), distance, stackLimitK, scaleDownK, req };
+  }
+
+  // ========= Modal de Tribos =========
+  let cachedAllies = null; // [[id,name,tag, members...]] (csv)
+  let alliesLoaded = false;
+
+  function openModal() {
+    $('#'+SCRIPT.prefix+'_modalMask').show();
+    $('#'+SCRIPT.prefix+'_modal').show();
+    $('#raTribeFilter').val('').focus();
+    renderTribeList();
+  }
+  function closeModal() {
+    $('#'+SCRIPT.prefix+'_modalMask').hide();
+    $('#'+SCRIPT.prefix+'_modal').hide();
+  }
+
+  function renderTribeList() {
+    if (!cachedAllies) {
+      $('#raTribeList').html(`<div class="item">Carregando ally.txt...</div>`);
+      return;
+    }
+
+    const q = ($('#raTribeFilter').val() || '').trim().toLowerCase();
+    const items = [];
+
+    // ally.txt colunas típicas: id,name,tag,members,villages,points,...
+    for (const a of cachedAllies) {
+      const id = a[0];
+      const name = a[1] || '';
+      const tag = normalizeTag(a[2] || '');
+      if (!id || !tag) continue;
+
+      const hay = (tag + ' ' + name).toLowerCase();
+      if (q && !hay.includes(q)) continue;
+
+      const checked = selectedTags.includes(tag) ? 'checked' : '';
+      items.push(`
+        <div class="item">
+          <input type="checkbox" class="raTribeChk" data-tag="${tag}" ${checked}/>
+          <div class="tag">[${tag}]</div>
+          <div class="name">${name}</div>
+        </div>
+      `);
+    }
+
+    if (!items.length) {
+      $('#raTribeList').html(`<div class="item">Nada encontrado.</div>`);
+      return;
+    }
+
+    $('#raTribeList').html(items.join(''));
+  }
+
+  async function ensureAlliesLoaded() {
+    if (alliesLoaded) return;
+    const base = location.origin;
+    const allyTxt = await fetchText(`${base}/map/ally.txt`);
+    cachedAllies = parseCSV(allyTxt);
+    alliesLoaded = true;
+  }
+
+  // ========= Main =========
   let lastRows = [];
 
   async function calculate() {
@@ -500,17 +601,21 @@
     msgInfo('Carregando dados do mundo (tribos/jogadores/vilas)...');
     const { villages: worldVillages, players, allies } = await fetchWorldData();
 
-    const tribeIds = tribeIdsFromTags(allies, input.tags);
-
-    // 👇 volta a não “matar” o script à toa
+    const tribeIds = tribeIdsFromSelectedTags(allies, input.tags);
     if (!tribeIds.length) {
-      msgErr('Não encontrei nenhuma tribo com essa tag em ally.txt. Verifique a tag (ex: [BO]) ou tente outra.');
+      // sem mensagem “ally.txt não encontrou”; apenas abre o seletor (igual era antes)
+      msgErr('Nenhuma das tribos selecionadas foi encontrada no ally.txt. Abra o seletor e escolha novamente.');
+      await ensureAlliesLoaded();
+      openModal();
       return;
     }
 
     const enemyPlayers = playerIdsFromTribeIds(players, tribeIds);
     const enemyCoords = coordsFromPlayerIds(worldVillages, enemyPlayers);
-    if (!enemyCoords.length) return msgErr('Não consegui obter coords das vilas inimigas.');
+    if (!enemyCoords.length) {
+      msgErr('Não consegui obter coords das vilas inimigas (tribos selecionadas).');
+      return;
+    }
 
     const rows = [];
     for (const v of myVillages) {
@@ -566,12 +671,61 @@
       copyToClipboard(buildBBCode(lastRows));
       msgOk('BBCode copiado!');
     });
+
+    $('#raPickTribes').on('click', async (e) => {
+      e.preventDefault();
+      try {
+        await ensureAlliesLoaded();
+        openModal();
+      } catch (err) {
+        console.error(err);
+        msgErr('Falha ao carregar ally.txt.');
+      }
+    });
+
+    $('#raCloseModal, #'+SCRIPT.prefix+'_modalMask').on('click', (e) => {
+      e.preventDefault();
+      closeModal();
+    });
+
+    $('#raTribeFilter').on('input', () => renderTribeList());
+
+    // marcar exibidas
+    $('#raSelectAllShown').on('click', (e) => {
+      e.preventDefault();
+      $('#raTribeList .raTribeChk').each(function () {
+        $(this).prop('checked', true);
+      });
+    });
+
+    // limpar tudo
+    $('#raClearAll').on('click', (e) => {
+      e.preventDefault();
+      $('#raTribeList .raTribeChk').each(function () {
+        $(this).prop('checked', false);
+      });
+    });
+
+    // aplicar
+    $('#raApplyTribes').on('click', (e) => {
+      e.preventDefault();
+      const tags = [];
+      $('#raTribeList .raTribeChk:checked').each(function () {
+        tags.push(String($(this).data('tag') || '').toUpperCase());
+      });
+      selectedTags = Array.from(new Set(tags)).sort();
+      saveSelectedTags(selectedTags);
+      updateSelectedTagsUI();
+      closeModal();
+      msgOk(`Tribos aplicadas: ${selectedTags.length ? selectedTags.join(', ') : '(nenhuma)'}`);
+    });
   }
 
   try {
     mountUI();
+    updateSelectedTagsUI();
     bind();
-    msgInfo('Pronto. Configure e clique em "Calculate Stacks".');
+    msgInfo('Pronto. Selecione as tribos e clique em "Calculate Stacks".');
   } catch (e) {
     console.error(e);
     msgErr('Falha ao iniciar o script.');
