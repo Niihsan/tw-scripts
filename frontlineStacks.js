@@ -3,7 +3,7 @@
 
   const SCRIPT = {
     name: 'Frontline Stacks Planner',
-    version: 'member-ui-multitribe + robust-units-parser',
+    version: 'member-ui-multitribe + header-column-mapping + robust-allytag',
     prefix: 'ra_frontline_member',
   };
 
@@ -28,7 +28,7 @@
     distance: 5,
     stackLimitK: 100,
     scaleDownPerFieldK: 5,
-    req: { spear: 15000, sword: 15000, heavy: 500, spy: 0 },
+    req: { spear: 15000, sword: 15000, heavy: 500, spy: 0 }, // heavy = Cavalaria pesada (HC)
   };
 
   function msgInfo(t) { (window.UI && UI.InfoMessage) ? UI.InfoMessage(t) : console.log(t); }
@@ -58,7 +58,21 @@
     return val + u.s;
   }
 
-  function parseCSV(text) { return text.trim().split('\n').map((l) => l.split(',')); }
+  // ========= CSV tolerant =========
+  function parseCSV(text) {
+    if (text == null) return [];
+    // remove BOM + normalize lines
+    text = String(text).replace(/^\uFEFF/, '').replace(/\r/g, '').trim();
+    if (!text) return [];
+    const lines = text.split('\n');
+
+    // detect delimiter: comma vs semicolon
+    const sample = lines[0] || '';
+    const delim = (sample.split(',').length >= sample.split(';').length) ? ',' : ';';
+
+    return lines.map((l) => l.split(delim).map(v => (v ?? '').trim()));
+  }
+
   async function fetchText(url) { return $.ajax({ url, method: 'GET' }); }
 
   // ========= UI =========
@@ -200,7 +214,7 @@
     else $('#content_value').prepend(html);
   }
 
-  // ===== Persistência simples =====
+  // ===== Persistência =====
   const LS_KEY = `${SCRIPT.prefix}:selectedTags`;
   function loadSelectedTags() {
     try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); }
@@ -210,7 +224,16 @@
     localStorage.setItem(LS_KEY, JSON.stringify(tags || []));
   }
 
-  let selectedTags = loadSelectedTags(); // array de strings "BO" sem colchetes
+  // ✅ normalização forte (resolve [BO], BO , B.O, etc)
+  function normalizeTag(t) {
+    return String(t || '')
+      .replace(/^\uFEFF/, '')
+      .toUpperCase()
+      .replace(/[\[\]\s]/g, '')
+      .replace(/[^A-Z0-9]/g, ''); // só A-Z0-9
+  }
+
+  let selectedTags = loadSelectedTags(); // array de tags normalizadas
 
   function updateSelectedTagsUI() {
     const text = selectedTags.length ? selectedTags.map(t => `[${t}]`).join(', ') : '(nenhuma)';
@@ -218,7 +241,7 @@
     $('#raTribesPill').text(`tribos: ${selectedTags.length ? selectedTags.join(', ') : '(nenhuma)'}`);
   }
 
-  // ========= Overview reader (FIX ROBUSTO: não usa índice de coluna) =========
+  // ========= Overview reader (coluna por HEADER INDEX) =========
   function pickUnitsTableFromHTML(doc) {
     const $tables = $(doc).find('table.vis');
     if (!$tables.length) return null;
@@ -243,18 +266,22 @@
     return null;
   }
 
-  // ordem real das unidades pelo header (spear/sword/axe/spy/light/heavy/ram/catapult/knight/snob...)
-  function headerUnitsInOrder($headerRow) {
-    const units = [];
+  // ✅ monta mapa unit->colIndex pelo header
+  function headerUnitColumnMap($headerRow) {
+    const map = {};
     const cells = $headerRow.children('th,td');
-    cells.each(function () {
+
+    cells.each(function (idx) {
       const $img = $(this).find('img[src*="/graphic/unit/unit_"]').first();
       if (!$img.length) return;
       const src = $img.attr('src') || '';
       const m = src.match(/unit_([a-z_]+)\.(png|webp)/i);
-      if (m) units.push(m[1]);
+      if (m) {
+        const unit = m[1];
+        map[unit] = idx; // índice da célula
+      }
     });
-    return units;
+    return map;
   }
 
   function isNaAldeiaRow($r) {
@@ -297,26 +324,14 @@
     return null;
   }
 
-  // ✅ FIX DEFINITIVO: pega APENAS células numéricas e mapeia na ordem do header
-  function readTroopsFromNaAldeiaRow_BY_NUMERIC_SEQUENCE($r, headerUnits) {
-    const cells = $r.children('td,th').toArray().map(td => $(td));
-
-    // remove 1ª célula (label "Na aldeia")
-    const rest = cells.slice(1);
-
-    // pega somente células que realmente tenham número
-    const nums = [];
-    for (const $c of rest) {
-      // ignora células de ação/link "Tropas/Comandos" etc (normalmente sem números)
-      const txt = ($c.text() || '').replace(/\s+/g, ' ').trim();
-      const n = cleanInt(txt);
-      // considera numérica se tiver pelo menos 1 dígito no texto
-      if (/\d/.test(txt)) nums.push(n);
-    }
-
+  // ✅ lê as tropas usando o índice exato do header (NUNCA soma 10k errado)
+  function readTroopsFromNaAldeiaRow_BY_HEADER_COLS($r, unitColMap) {
     const troops = {};
-    for (let i = 0; i < headerUnits.length; i++) {
-      troops[headerUnits[i]] = nums[i] != null ? nums[i] : 0;
+    const cells = $r.children('td,th');
+
+    for (const [unit, colIdx] of Object.entries(unitColMap)) {
+      const $cell = cells.eq(colIdx);
+      troops[unit] = cleanInt($cell.text());
     }
     return troops;
   }
@@ -334,13 +349,13 @@
     const $hdr = findHeaderRowWithUnitIcons($t);
     if (!$hdr) throw new Error('Não achei o cabeçalho de unidades.');
 
-    const hUnits = headerUnitsInOrder($hdr);
-    if (!hUnits.length) throw new Error('Cabeçalho sem unidades.');
+    const unitColMap = headerUnitColumnMap($hdr);
+    if (!Object.keys(unitColMap).length) throw new Error('Cabeçalho sem unidades.');
 
-    // garantia mínima (pra não dar leitura maluca)
+    // check mínimo (importante pro seu caso)
     const must = ['spear', 'sword', 'heavy'];
     for (const u of must) {
-      if (!hUnits.includes(u)) throw new Error(`Cabeçalho não contém ${u}.`);
+      if (!(u in unitColMap)) throw new Error(`Cabeçalho não contém ${u}.`);
     }
 
     const rows = $t.find('tr').toArray().map((r) => $(r));
@@ -353,7 +368,7 @@
       const vh = findVillageHeaderAbove(rows, i);
       if (!vh) continue;
 
-      const troops = readTroopsFromNaAldeiaRow_BY_NUMERIC_SEQUENCE($r, hUnits);
+      const troops = readTroopsFromNaAldeiaRow_BY_HEADER_COLS($r, unitColMap);
 
       const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
       villagesByKey.set(key, {
@@ -380,12 +395,8 @@
     return { villages: parseCSV(villTxt), players: parseCSV(plyTxt), allies: parseCSV(allyTxt) };
   }
 
-  function normalizeTag(t) {
-    return String(t || '').trim().replace(/^\[|\]$/g, '').replace(/[\[\]]/g, '').trim().toUpperCase();
-  }
-
   function tribeIdsFromSelectedTags(allies, tags) {
-    const wanted = new Set(tags.map(normalizeTag).filter(Boolean));
+    const wanted = new Set((tags || []).map(normalizeTag).filter(Boolean));
     return allies
       .filter((a) => a[0] && a[2] && wanted.has(normalizeTag(a[2])))
       .map((a) => Number(a[0]))
@@ -425,9 +436,11 @@
       const need = Number(needRaw) || 0;
       if (need <= 0) continue;
 
-      const effectiveNeed = (unit === 'spy') ? need : Math.max(0, need - scale);
-      const have = Number(troops[unit]) || 0;
+      // spy e heavy normalmente não escalam (padrão do script original)
+      const nonScaling = (unit === 'spy' || unit === 'heavy');
+      const effectiveNeed = nonScaling ? need : Math.max(0, need - scale);
 
+      const have = Number(troops[unit]) || 0;
       missing[unit] = effectiveNeed > have ? (effectiveNeed - have) : 0;
     }
     return missing;
@@ -528,8 +541,8 @@
     return { tags: selectedTags.slice(), distance, stackLimitK, scaleDownK, req };
   }
 
-  // ========= Modal de Tribos =========
-  let cachedAllies = null; // [[id,name,tag, members...]] (csv)
+  // ========= Modal =========
+  let cachedAllies = null;
   let alliesLoaded = false;
 
   function openModal() {
@@ -552,7 +565,6 @@
     const q = ($('#raTribeFilter').val() || '').trim().toLowerCase();
     const items = [];
 
-    // ally.txt colunas típicas: id,name,tag,members,villages,points,...
     for (const a of cachedAllies) {
       const id = a[0];
       const name = a[1] || '';
@@ -603,7 +615,6 @@
 
     const tribeIds = tribeIdsFromSelectedTags(allies, input.tags);
     if (!tribeIds.length) {
-      // sem mensagem “ally.txt não encontrou”; apenas abre o seletor (igual era antes)
       msgErr('Nenhuma das tribos selecionadas foi encontrada no ally.txt. Abra o seletor e escolha novamente.');
       await ensureAlliesLoaded();
       openModal();
@@ -690,30 +701,23 @@
 
     $('#raTribeFilter').on('input', () => renderTribeList());
 
-    // marcar exibidas
     $('#raSelectAllShown').on('click', (e) => {
       e.preventDefault();
-      $('#raTribeList .raTribeChk').each(function () {
-        $(this).prop('checked', true);
-      });
+      $('#raTribeList .raTribeChk').each(function () { $(this).prop('checked', true); });
     });
 
-    // limpar tudo
     $('#raClearAll').on('click', (e) => {
       e.preventDefault();
-      $('#raTribeList .raTribeChk').each(function () {
-        $(this).prop('checked', false);
-      });
+      $('#raTribeList .raTribeChk').each(function () { $(this).prop('checked', false); });
     });
 
-    // aplicar
     $('#raApplyTribes').on('click', (e) => {
       e.preventDefault();
       const tags = [];
       $('#raTribeList .raTribeChk:checked').each(function () {
-        tags.push(String($(this).data('tag') || '').toUpperCase());
+        tags.push(normalizeTag($(this).data('tag') || ''));
       });
-      selectedTags = Array.from(new Set(tags)).sort();
+      selectedTags = Array.from(new Set(tags)).filter(Boolean).sort();
       saveSelectedTags(selectedTags);
       updateSelectedTagsUI();
       closeModal();
