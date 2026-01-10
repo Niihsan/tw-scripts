@@ -299,7 +299,7 @@
     return null;
   }
 
-  // ✅ FIX DEFINITIVO: mapeia unidades do header e ajusta offset da linha "Na aldeia"
+  // ✅ FIX DEFINITIVO: Header tem offset +1 em relação à linha "Na aldeia"
   function readTroopsFromNaAldeiaRow($r, $table) {
     const troops = {};
     const units = (game_data && Array.isArray(game_data.units) && game_data.units.length)
@@ -330,19 +330,24 @@
       }
     });
 
-    // A linha "Na aldeia" tem offset de -1 em relação ao header
-    // Header: [Aldeia][vazio][spear][sword]...
-    // Na aldeia: [Na Aldeia][pop][spear][sword]...
-    // Então spear no header está em col 2, mas na linha "Na aldeia" também está em col 2
+    // CRITICAL: O header tem 1 coluna a mais no início
+    // Header:    [Aldeia][vazio][spear][sword][axe]...
+    // Na aldeia: [Na Aldeia][spear][sword][axe]...
+    // Então spear está na col 2 do header, mas col 1 da linha "Na aldeia"
     
     const $cells = $r.children('td');
     
     for (const unit of units) {
       const headerCol = unitColumnMap[unit];
       if (headerCol !== undefined) {
-        // Usa a mesma coluna (não precisa ajustar offset porque coincide)
-        const txt = $cells.eq(headerCol).text();
-        troops[unit] = cleanInt(txt);
+        // Ajusta o offset: linha "Na aldeia" tem 1 coluna a menos no início
+        const dataCol = headerCol - 1;
+        if (dataCol >= 0 && dataCol < $cells.length) {
+          const txt = $cells.eq(dataCol).text();
+          troops[unit] = cleanInt(txt);
+        } else {
+          troops[unit] = 0;
+        }
       } else {
         troops[unit] = 0;
       }
@@ -351,13 +356,13 @@
     return troops;
   }
 
-  // Método fallback: pula "Na Aldeia" (col 0) e população (col 1), lê a partir da col 2
+  // Método fallback: começa direto na col 1 (spear)
   function readTroopsFromNaAldeiaRow_FALLBACK($r, units) {
     const troops = {};
     const $cells = $r.children('td');
     
-    // Estrutura: [Na Aldeia][população][spear][sword][axe][spy][light][heavy][ram][catapult][knight][snob][milicia][ação]
-    const startCol = 2; // pula "Na Aldeia" e população
+    // Estrutura: [Na Aldeia][spear][sword][axe][spy][light][heavy][ram][catapult][knight][snob][milicia][ação]
+    const startCol = 1; // começa direto no spear
     
     for (let i = 0; i < units.length; i++) {
       const colIdx = startCol + i;
