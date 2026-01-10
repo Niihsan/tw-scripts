@@ -1,7 +1,7 @@
 /*
  * Frontline Stacks Planner — Member (BR138)
  * Lê OVERVIEW Tropas -> linha "Na aldeia" (inclui apoios dentro da vila)
- * Ajuste desta versão: UI/FORMATAÇÃO maior + resultados “vila por vila”
+ * Ajuste desta versão: fonte um pouco maior + linhas separando cada aldeia
  */
 
 if (typeof DEBUG !== 'boolean') DEBUG = false;
@@ -10,8 +10,8 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
 (function () {
   const script = {
     name: 'Frontline Stacks Planner',
-    version: 'member-NA-ALDEIA-UI2',
-    prefix: 'frontlineStacksPlanner_member_ui2',
+    version: 'member-NA-ALDEIA-UI-lite',
+    prefix: 'frontlineStacksPlanner_member_ui_lite',
   };
 
   const coordsRegex = /\d{1,3}\|\d{1,3}/g;
@@ -41,8 +41,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       location.assign(game_data.link_base_pure + 'map');
       return;
     }
-
-    UI.SuccessMessage(`[${script.name}] carregado (${script.version}).`);
 
     // World data
     const [txtVillages, txtPlayers, txtTribes] = await Promise.all([
@@ -118,7 +116,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         UI.SuccessMessage('Nenhuma aldeia sua está dentro do raio informado.');
         jQuery('#raStacks').hide().empty();
         jQuery('#raExport').attr('data-stack-plans', '');
-        setSummary(0, 0);
         return;
       }
 
@@ -146,8 +143,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         }
       }
 
-      setSummary(candidates.length, need.length);
-
       if (!need.length) {
         UI.SuccessMessage('Todas as aldeias já estão stackadas no critério.');
         jQuery('#raStacks').hide().empty();
@@ -155,9 +150,10 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         return;
       }
 
-      jQuery('#raStacks').show().html(buildVillageCards(need));
+      const tableHtml = buildVillagesTableSimple(need);
+      jQuery('#raStacks').show().html(tableHtml);
       jQuery('#raExport').attr('data-stack-plans', JSON.stringify(need));
-      UI.SuccessMessage(`OK: ${candidates.length} no raio; ${need.length} precisando stack.`);
+      UI.SuccessMessage(`OK: ${need.length} aldeias precisam stack.`);
     });
 
     jQuery('#raExport').on('click', (e) => {
@@ -222,7 +218,7 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         const txt = $tr.text().trim();
         const coords = (txt.match(coordsRegex) || [null])[0];
 
-        // Linha “título” da aldeia (tem coords + link com village/id)
+        // Linha “título” da aldeia
         const $a = $tr.find('a[href*="village="], a[href*="info_village"]').first();
         if ($a.length && coords) {
           const href = $a.attr('href') || '';
@@ -289,10 +285,8 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       const html = `
         <div id="${script.prefix}" class="ra-wrap">
           <div class="ra-head">
-            <div>
-              <div class="ra-title">${script.name}</div>
-              <div class="ra-sub">v.${script.version} — lendo <b>"Na aldeia"</b> do overview (inclui apoios)</div>
-            </div>
+            <div class="ra-title">${script.name}</div>
+            <div class="ra-sub">v.${script.version} — lendo <b>"Na aldeia"</b> do overview (inclui apoios)</div>
           </div>
 
           <div class="ra-body">
@@ -321,7 +315,7 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
 
             <div class="ra-block">
               <div class="ra-block-title">Required Stack Amount</div>
-              <table class="vis ra-units-table">
+              <table class="vis ra-units-table" width="100%">
                 <thead><tr>${unitHeaders}</tr></thead>
                 <tbody><tr>${unitRow}</tr></tbody>
               </table>
@@ -330,7 +324,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
             <div class="ra-actions">
               <a href="javascript:void(0);" id="raPlanStacks" class="btn ra-btn">Calculate Stacks</a>
               <a href="javascript:void(0);" id="raExport" class="btn ra-btn" data-stack-plans="">Export</a>
-              <span id="raSummary" class="ra-summary"></span>
             </div>
 
             <div id="raStacks" class="ra-results" style="display:none;"></div>
@@ -338,159 +331,120 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         </div>
 
         <style>
-          /* ====== BASE (fonte maior como você pediu) ====== */
+          /* Fonte um pouco maior, sem exagero */
           #${script.prefix}.ra-wrap{
-            border: 2px solid #603000;
+            border: 1px solid #603000;
             background: #f4e4bc;
             margin: 10px 0 15px;
-            font-size: 15px;
+            font-size: 14px; /* antes era menor */
           }
           #${script.prefix} *{ box-sizing:border-box; }
 
           #${script.prefix} .ra-head{
             background: #c1a264 url(/graphic/screen/tableheader_bg3.png) repeat-x;
-            padding: 12px 14px;
+            padding: 10px 12px;
             border-bottom: 1px solid #603000;
           }
           #${script.prefix} .ra-title{
-            font-size: 20px;
+            font-size: 17px;
             font-weight: 700;
             line-height: 1.1;
           }
           #${script.prefix} .ra-sub{
-            font-size: 14px;
+            font-size: 13px;
             margin-top: 4px;
             opacity: .95;
           }
 
-          #${script.prefix} .ra-body{ padding: 14px; }
+          #${script.prefix} .ra-body{ padding: 12px; }
 
-          /* ====== GRID DOS CAMPOS (inputs maiores) ====== */
           #${script.prefix} .ra-grid{
             display:grid;
-            grid-template-columns: 1.4fr .8fr .8fr .9fr;
-            gap: 14px;
+            grid-template-columns: 1.2fr .7fr .7fr .8fr;
+            gap: 10px;
             align-items:end;
-            margin-bottom: 14px;
+            margin-bottom: 10px;
           }
           #${script.prefix} .ra-label{
             display:block;
             font-weight:700;
-            margin-bottom: 8px;
-            font-size: 15px;
+            margin-bottom: 6px;
+            font-size: 14px;
           }
           #${script.prefix} .ra-input{
             width:100%;
-            padding: 10px 10px;
-            font-size: 16px;
+            padding: 6px 8px;
+            font-size: 14px;
             line-height: 1.1;
           }
 
-          /* ====== BLOCO UNIDADES ====== */
           #${script.prefix} .ra-block{
             margin-top: 6px;
-            padding: 10px;
+            padding: 8px;
             border: 1px solid #bd9c5a;
-            background: rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.15);
           }
           #${script.prefix} .ra-block-title{
             font-weight: 800;
-            font-size: 16px;
-            margin-bottom: 10px;
-          }
-          #${script.prefix} .ra-units-table{
-            width:100%;
-            border: 2px solid #bd9c5a;
+            font-size: 14px;
+            margin-bottom: 8px;
           }
           #${script.prefix} .ra-unit-img{
-            max-width: 22px;
+            max-width: 20px;
             vertical-align: middle;
           }
           #${script.prefix} .ra-u-th, #${script.prefix} .ra-u-td{
             text-align:center;
-            padding: 8px;
-          }
-          #${script.prefix} .ra-u{
-            width: 100%;
-            max-width: 170px;
-            text-align:center;
-            font-size: 18px;
-            padding: 10px 8px;
+            padding: 6px;
           }
 
-          /* ====== AÇÕES ====== */
           #${script.prefix} .ra-actions{
-            margin-top: 12px;
+            margin-top: 10px;
             display:flex;
-            gap: 10px;
+            gap: 8px;
             align-items:center;
             flex-wrap: wrap;
           }
           #${script.prefix} .ra-btn{
-            font-size: 15px;
-            padding: 6px 10px;
-          }
-          #${script.prefix} .ra-summary{
-            font-weight: 700;
-            padding: 6px 10px;
-            border: 1px solid #bd9c5a;
-            background: rgba(255,255,255,0.25);
-          }
-
-          /* ====== RESULTADOS EM “CARDS” (vila por vila) ====== */
-          #${script.prefix} .ra-results{
-            margin-top: 14px;
-            display:grid;
-            grid-template-columns: 1fr;
-            gap: 12px;
-          }
-          #${script.prefix} .ra-card{
-            border: 2px solid #bd9c5a;
-            background: #fff5da;
-          }
-          #${script.prefix} .ra-card-head{
-            display:flex;
-            justify-content:space-between;
-            gap: 10px;
-            align-items:center;
-            padding: 10px 12px;
-            background: #f0e2be;
-            border-bottom: 1px solid #bd9c5a;
-          }
-          #${script.prefix} .ra-card-title{
-            font-size: 16px;
-            font-weight: 800;
-          }
-          #${script.prefix} .ra-pill{
-            font-weight: 800;
-            background: rgba(0,0,0,0.06);
-            border: 1px solid rgba(0,0,0,0.12);
+            font-size: 13px;
             padding: 4px 8px;
-            border-radius: 6px;
-            white-space: nowrap;
           }
-          #${script.prefix} .ra-card-body{ padding: 10px 12px; }
 
-          #${script.prefix} .ra-mini{
+          /* TABELA RESULTADOS — simples, fonte um pouco maior */
+          #${script.prefix} .ra-results{
+            margin-top: 12px;
+          }
+          #${script.prefix} .ra-table{
             width:100%;
             border-collapse: collapse;
+            border: 2px solid #bd9c5a;
+            font-size: 14px; /* maior */
           }
-          #${script.prefix} .ra-mini th,
-          #${script.prefix} .ra-mini td{
+          #${script.prefix} .ra-table th,
+          #${script.prefix} .ra-table td{
             border: 1px solid #bd9c5a;
-            padding: 8px 10px;
-            text-align:left;
-            font-size: 15px;
+            padding: 7px 8px;
+            vertical-align: top;
           }
-          #${script.prefix} .ra-mini th{
+          #${script.prefix} .ra-table th{
             background: #f0e2be;
             font-weight: 800;
-            width: 220px;
           }
+
+          /* ✅ Linhas separando cada aldeia (mais visível) */
+          #${script.prefix} .ra-table tbody tr{
+            border-bottom: 3px solid #7d510f; /* linha separadora */
+          }
+          #${script.prefix} .ra-table tbody tr:last-child{
+            border-bottom: none;
+          }
+
+          #${script.prefix} .ra-tal{ text-align:left; }
+          #${script.prefix} .ra-tac{ text-align:center; }
           #${script.prefix} .ra-missing{
             white-space: pre-line;
             font-family: monospace;
-            font-size: 14px;
+            font-size: 13px;
           }
 
           @media (max-width: 900px){
@@ -498,7 +452,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
           }
           @media (max-width: 520px){
             #${script.prefix} .ra-grid{ grid-template-columns: 1fr; }
-            #${script.prefix} .ra-u{ max-width: none; }
           }
         </style>
       `;
@@ -509,74 +462,44 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       }
     }
 
-    function setSummary(inRadius, needStack) {
-      const el = document.getElementById('raSummary');
-      if (!el) return;
-      el.textContent = `No raio: ${inRadius} | Precisa: ${needStack}`;
-    }
-
-    function collectUserInput() {
-      let chosenTribes = (jQuery('#raTribes').val() || '').trim();
-      let distance = parseInt(jQuery('#raDistance').val(), 10);
-      let stackLimit = parseInt(jQuery('#raStack').val(), 10);
-      let scaleDownPerField = parseInt(jQuery('#raScalePerField').val(), 10);
-
-      if (!chosenTribes) {
-        UI.ErrorMessage('Selecione uma tribo inimiga.');
-        return { chosenTribes: [], distance, unitAmounts: {}, stackLimit, scaleDownPerField };
-      }
-      chosenTribes = chosenTribes.split(',').map(s => s.trim()).filter(Boolean);
-
-      const unitAmounts = {};
-      jQuery('.ra-u').each(function () {
-        const unit = jQuery(this).attr('data-unit');
-        const val = parseInt(jQuery(this).val(), 10) || 0;
-        if (val > 0) unitAmounts[unit] = val;
-      });
-
-      return { chosenTribes, distance, unitAmounts, stackLimit, scaleDownPerField };
-    }
-
-    // ----------------- Resultados “vila por vila” -----------------
-    function buildVillageCards(arr) {
-      return arr.map((v, idx) => {
+    // ----------------- Tabela simples com separador -----------------
+    function buildVillagesTableSimple(arr) {
+      let rows = arr.map((v, i) => {
         const [x, y] = v.coords.split('|');
-
-        const missing = missingToText(v.missingTroops) || '-';
-
         return `
-          <div class="ra-card">
-            <div class="ra-card-head">
-              <div class="ra-card-title">
-                #${idx + 1} —
-                <a href="/game.php?screen=info_village&id=${v.villageId}" target="_blank" rel="noreferrer noopener">
-                  ${escapeHtml(v.villageName)}
-                </a>
-                <span class="ra-pill">
-                  <a href="javascript:TWMap.focus(${x},${y});">${v.coords}</a>
-                </span>
+          <tr>
+            <td class="ra-tac"><b>${i + 1}</b></td>
+            <td class="ra-tal">
+              <a href="/game.php?screen=info_village&id=${v.villageId}" target="_blank" rel="noreferrer noopener">
+                ${escapeHtml(v.villageName)}
+              </a>
+              <div style="opacity:.9;margin-top:2px;">
+                <a href="javascript:TWMap.focus(${x},${y});">${v.coords}</a>
               </div>
-
-              <div class="ra-pill">Dist: ${v.fieldsAway}</div>
-            </div>
-
-            <div class="ra-card-body">
-              <table class="ra-mini">
-                <tbody>
-                  <tr>
-                    <th>Pop.</th>
-                    <td><b>${formatK(v.pop)}</b></td>
-                  </tr>
-                  <tr>
-                    <th>Missing Troops</th>
-                    <td class="ra-missing">${escapeHtml(missing)}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
+            </td>
+            <td class="ra-tac"><b>${formatK(v.pop)}</b></td>
+            <td class="ra-tac">${v.fieldsAway}</td>
+            <td class="ra-tal ra-missing">${escapeHtml(missingToText(v.missingTroops) || '-')}</td>
+          </tr>
         `;
       }).join('');
+
+      return `
+        <table class="ra-table">
+          <thead>
+            <tr>
+              <th style="width:50px;">#</th>
+              <th class="ra-tal">Village</th>
+              <th style="width:90px;" class="ra-tac">Pop.</th>
+              <th style="width:90px;" class="ra-tac">Distance</th>
+              <th class="ra-tal">Missing Troops</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      `;
     }
 
     // ----------------- Core math -----------------
@@ -615,7 +538,30 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       return s.trim();
     }
 
-    // ----------------- Utilities -----------------
+    // ----------------- Input -----------------
+    function collectUserInput() {
+      let chosenTribes = (jQuery('#raTribes').val() || '').trim();
+      let distance = parseInt(jQuery('#raDistance').val(), 10);
+      let stackLimit = parseInt(jQuery('#raStack').val(), 10);
+      let scaleDownPerField = parseInt(jQuery('#raScalePerField').val(), 10);
+
+      if (!chosenTribes) {
+        UI.ErrorMessage('Selecione uma tribo inimiga.');
+        return { chosenTribes: [], distance, unitAmounts: {}, stackLimit, scaleDownPerField };
+      }
+      chosenTribes = chosenTribes.split(',').map(s => s.trim()).filter(Boolean);
+
+      const unitAmounts = {};
+      jQuery('.ra-u').each(function () {
+        const unit = jQuery(this).attr('data-unit');
+        const val = parseInt(jQuery(this).val(), 10) || 0;
+        if (val > 0) unitAmounts[unit] = val;
+      });
+
+      return { chosenTribes, distance, unitAmounts, stackLimit, scaleDownPerField };
+    }
+
+    // ----------------- Utils -----------------
     function getTribeIdsByTag(tags, tribeArr) {
       const wanted = new Set(tags.map(s => s.trim()));
       return tribeArr.filter(t => wanted.has(t.tag)).map(t => t.id);
