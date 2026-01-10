@@ -1,7 +1,8 @@
 /*
  * Frontline Stacks Planner — Member (BR138)
  * Lê OVERVIEW Tropas -> linha "Na aldeia" (inclui apoios dentro da vila)
- * Ajuste desta versão: fonte um pouco maior + linhas separando cada aldeia
+ * UI: fonte um pouco maior + linhas separando cada aldeia
+ * FIX: mapeamento correto das colunas de unidades (spear/sword/heavy etc.)
  */
 
 if (typeof DEBUG !== 'boolean') DEBUG = false;
@@ -10,7 +11,7 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
 (function () {
   const script = {
     name: 'Frontline Stacks Planner',
-    version: 'member-NA-ALDEIA-UI-lite',
+    version: 'member-NA-ALDEIA-UI-lite+fix-cols',
     prefix: 'frontlineStacksPlanner_member_ui_lite',
   };
 
@@ -42,7 +43,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       return;
     }
 
-    // World data
     const [txtVillages, txtPlayers, txtTribes] = await Promise.all([
       jQuery.get('/map/village.txt'),
       jQuery.get('/map/player.txt'),
@@ -98,7 +98,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         return;
       }
 
-      // Filtra suas aldeias no raio do inimigo
       const candidates = [];
       for (const v of myVillages) {
         let best = Infinity;
@@ -175,6 +174,7 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
 
     // ============================================================
     // OVERVIEW PARSER “SIMPLES” — lê "Na aldeia"
+    // FIX: mapeia unidades por ORDEM dos ícones no cabeçalho
     // ============================================================
     async function fetchOverviewUnitsNaAldeia_SIMPLE() {
       const url =
@@ -197,15 +197,25 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       });
       if (!$table || !$table.length) $table = $tables.eq(0);
 
-      // Mapeia colunas das unidades pelo ícone no thead
-      const unitColIndex = {};
-      $table.find('thead img[src*="/graphic/unit/unit_"]').each(function () {
-        const src = jQuery(this).attr('src') || '';
+      // ✅ pega a ORDEM das unidades no thead (não usa .index() do th)
+      const unitOrder = [];
+      const $headRow = $table.find('thead tr').last();
+
+      $headRow.find('th').each(function () {
+        const $img = jQuery(this).find('img[src*="/graphic/unit/unit_"]').first();
+        if (!$img.length) return;
+        const src = $img.attr('src') || '';
         const m = src.match(/unit_([a-z0-9_]+)\./i);
         if (!m) return;
-        const thIndex = jQuery(this).closest('th').index();
-        if (thIndex >= 0) unitColIndex[m[1]] = thIndex;
+
+        const unit = m[1];
+        // só unidades do mundo atual
+        if (game_data.units.includes(unit)) unitOrder.push(unit);
       });
+
+      if (!unitOrder.length) {
+        throw new Error('Não encontrei ícones de unidades no thead');
+      }
 
       const myVillages = [];
       const troopsById = {};
@@ -237,6 +247,8 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         if (!currentVillage) return;
 
         const $tds = $tr.find('td');
+        if (!$tds.length) return;
+
         const first = ($tds.eq(0).text() || '').trim().toLowerCase();
 
         // ✅ alvo: "na aldeia"
@@ -244,10 +256,12 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
           const vid = currentVillage.villageId;
           const troops = {};
 
-          for (const unit of Object.keys(unitColIndex)) {
-            if (!game_data.units.includes(unit)) continue;
-            const idx = unitColIndex[unit];
-            const raw = ($tds.eq(idx).text() || '').trim();
+          // Os valores começam logo após o label ("Na aldeia")
+          const base = 1;
+
+          for (let i = 0; i < unitOrder.length; i++) {
+            const unit = unitOrder[i];
+            const raw = ($tds.eq(base + i).text() || '').trim();
             const n = parseInt(raw.replace(/[^\d]/g, '') || '0', 10);
             troops[unit] = Number.isFinite(n) ? n : 0;
           }
@@ -331,12 +345,11 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         </div>
 
         <style>
-          /* Fonte um pouco maior, sem exagero */
           #${script.prefix}.ra-wrap{
             border: 1px solid #603000;
             background: #f4e4bc;
             margin: 10px 0 15px;
-            font-size: 14px; /* antes era menor */
+            font-size: 14px;
           }
           #${script.prefix} *{ box-sizing:border-box; }
 
@@ -410,7 +423,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
             padding: 4px 8px;
           }
 
-          /* TABELA RESULTADOS — simples, fonte um pouco maior */
           #${script.prefix} .ra-results{
             margin-top: 12px;
           }
@@ -418,7 +430,7 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
             width:100%;
             border-collapse: collapse;
             border: 2px solid #bd9c5a;
-            font-size: 14px; /* maior */
+            font-size: 14px;
           }
           #${script.prefix} .ra-table th,
           #${script.prefix} .ra-table td{
@@ -431,9 +443,9 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
             font-weight: 800;
           }
 
-          /* ✅ Linhas separando cada aldeia (mais visível) */
+          /* separador por aldeia */
           #${script.prefix} .ra-table tbody tr{
-            border-bottom: 3px solid #7d510f; /* linha separadora */
+            border-bottom: 3px solid #7d510f;
           }
           #${script.prefix} .ra-table tbody tr:last-child{
             border-bottom: none;
@@ -462,7 +474,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       }
     }
 
-    // ----------------- Tabela simples com separador -----------------
     function buildVillagesTableSimple(arr) {
       let rows = arr.map((v, i) => {
         const [x, y] = v.coords.split('|');
@@ -502,7 +513,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       `;
     }
 
-    // ----------------- Core math -----------------
     function calcPop(troops) {
       let total = 0;
       for (const [unit, amount] of Object.entries(troops || {})) {
@@ -538,7 +548,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       return s.trim();
     }
 
-    // ----------------- Input -----------------
     function collectUserInput() {
       let chosenTribes = (jQuery('#raTribes').val() || '').trim();
       let distance = parseInt(jQuery('#raDistance').val(), 10);
@@ -561,7 +570,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       return { chosenTribes, distance, unitAmounts, stackLimit, scaleDownPerField };
     }
 
-    // ----------------- Utils -----------------
     function getTribeIdsByTag(tags, tribeArr) {
       const wanted = new Set(tags.map(s => s.trim()));
       return tribeArr.filter(t => wanted.has(t.tag)).map(t => t.id);
