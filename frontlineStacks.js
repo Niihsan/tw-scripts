@@ -1,9 +1,10 @@
 /* 
  * Frontline Stacks Planner (Member Edition) — BR138
- * Fixes:
- *  - Lê overview por ícones (sem colunas puladas)
- *  - Lê "Na aldeia" (inclui apoios)
- *  - Robustez: tenta /overview_villages e /overview, e resolve vila via "linha Na aldeia" + header acima
+ * FIX (overview_villages&mode=units):
+ *  - Detecta tabela mesmo sem THEAD (header no TBODY)
+ *  - Mapeia colunas por ÍCONES (unit_*.png/webp)
+ *  - Encontra o header da vila acima via parâmetro village=XXXX
+ *  - Lê a linha "Na aldeia" (inclui apoios) corretamente
  */
 
 (function () {
@@ -11,7 +12,7 @@
 
   const SCRIPT = {
     name: 'Frontline Stacks Planner',
-    version: 'v.member-BR138-overview-fallback',
+    version: 'v.member-BR138-overview_villages-units-fix',
     prefix: 'ra_frontline_member_br138',
   };
 
@@ -21,7 +22,7 @@
     return;
   }
 
-  const coordsRegex = /\d{1,3}\|\d{1,3}/;
+  const coordsRegex = /\b\d{1,3}\|\d{1,3}\b/;
   const isMap = new URL(location.href).searchParams.get('screen') === 'map';
   if (!isMap) {
     if (window.UI && UI.InfoMessage) UI.InfoMessage('Redirecionando para o mapa...');
@@ -142,7 +143,7 @@
           <h3>${SCRIPT.name}</h3>
           <div class="small"><b>${SCRIPT.version}</b></div>
         </div>
-        <div class="sub">member • lendo <b>"Na aldeia"</b> do overview (inclui apoios) • leitura por ícones • fallback para overview alternativo</div>
+        <div class="sub">member • lendo <b>"Na aldeia"</b> do overview_villages (inclui apoios) • leitura por ícones</div>
         <div class="body">
           <div class="grid4">
             <div>
@@ -212,9 +213,9 @@
     return { tags, distance, stackLimitK, scaleDownK, req };
   }
 
-  // ======= Core: ler overview robusto =======
+  // ======= Overview reader (fix for overview_villages&mode=units) =======
+
   function pickUnitsTableFromHTML(doc) {
-    // Pega a tabela "mais provável": tem thead com ícones de unidades.
     const $tables = $(doc).find('table.vis');
     if (!$tables.length) return null;
 
@@ -223,10 +224,10 @@
 
     $tables.each(function () {
       const $t = $(this);
-      const iconCount = $t.find('thead img[src*="/graphic/unit/unit_"]').length;
-      const hasBody = $t.find('tbody tr').length;
-      const score = iconCount * 10 + hasBody;
-      if (score > bestScore && iconCount >= 6) {
+      const iconCountAll = $t.find('img[src*="/graphic/unit/unit_"]').length;
+      const rows = $t.find('tr').length;
+      const score = iconCountAll * 10 + rows;
+      if (score > bestScore && iconCountAll >= 8) {
         best = $t;
         bestScore = score;
       }
@@ -235,10 +236,20 @@
     return best;
   }
 
-  function buildUnitColumnMap($t) {
+  function findHeaderRowWithUnitIcons($t) {
+    // Pode estar em thead, ou como primeira linha no tbody
+    const $rows = $t.find('tr').toArray().map(r => $(r));
+    for (const $r of $rows) {
+      const icons = $r.find('img[src*="/graphic/unit/unit_"]');
+      if (icons.length >= 6) return $r;
+    }
+    return null;
+  }
+
+  function buildUnitColumnMapFromHeaderRow($headerRow) {
     const unitColIdx = {};
-    const headerCells = $t.find('thead tr').first().children();
-    headerCells.each(function (i) {
+    const cells = $headerRow.children('th,td');
+    cells.each(function (i) {
       const $img = $(this).find('img[src*="/graphic/unit/unit_"]').first();
       if ($img.length) {
         const src = $img.attr('src') || '';
@@ -250,115 +261,114 @@
   }
 
   function isNaAldeiaRow($r) {
-    // Checa a PRIMEIRA célula de texto (muda conforme mundo/idioma)
-    const txt = ($r.children('td').first().text() || '').replace(/\s+/g, ' ').trim().toLowerCase();
-    if (txt === 'na aldeia') return true;
-    // fallback: qualquer célula contendo "na aldeia"
+    const first = ($r.children('td,th').first().text() || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (first === 'na aldeia') return true;
     return $r.text().toLowerCase().includes('na aldeia');
   }
 
-  function findVillageHeaderAbove(rows, idx) {
-    // Sobe procurando um <a ... screen=info_village ...> com coords na mesma linha
-    for (let j = idx; j >= 0 && j >= idx - 8; j--) {
-      const $r = rows[j];
-      const $link =
-        $r.find('a[href*="screen=info_village"]').first().length
-          ? $r.find('a[href*="screen=info_village"]').first()
-          : $r.find('a[href*="info_village"]').first();
+  function extractVillageIdFromRow($r) {
+    // procura qualquer link com village=XXXX
+    const hrefs = $r.find('a[href*="village="]').toArray().map(a => $(a).attr('href') || '');
+    for (const href of hrefs) {
+      const m = href.match(/[?&]village=(\d+)/);
+      if (m) return Number(m[1]);
+    }
+    return 0;
+  }
 
-      if ($link.length) {
-        const href = $link.attr('href') || '';
-        let id = 0;
-        try { id = Number(new URL(href, location.origin).searchParams.get('id') || 0); } catch {}
-        const text = $r.text().replace(/\s+/g, ' ').trim();
-        const cm = text.match(coordsRegex);
-        if (id && cm) {
-          const coords = cm[0];
-          const name = ($link.text() || '').trim() || `Vila ${coords}`;
-          return { id, name, coords };
-        }
+  function findVillageHeaderAbove(rows, idx) {
+    // sobe procurando um "header" com coords e village=XXXX
+    for (let j = idx; j >= 0 && j >= idx - 12; j--) {
+      const $r = rows[j];
+
+      const text = $r.text().replace(/\s+/g, ' ').trim();
+      const cm = text.match(coordsRegex);
+      if (!cm) continue;
+
+      const coords = cm[0];
+      const vid = extractVillageIdFromRow($r);
+
+      // Nome: tenta pegar o primeiro link "forte" da vila; senão usa texto até coords
+      let name = '';
+      const $bestLink = $r.find('a').filter((_, a) => {
+        const h = $(a).attr('href') || '';
+        return h.includes('village=') || h.includes('screen=info_village') || h.includes('info_village');
+      }).first();
+
+      if ($bestLink.length) name = ($bestLink.text() || '').trim();
+
+      if (!name) {
+        // pega trecho antes das coords
+        name = text.split(coords)[0].trim();
+        if (!name) name = `Vila ${coords}`;
       }
+
+      // Mesmo que não ache villageId, ainda retorna coords e nome (fallback)
+      return { id: vid, name, coords };
     }
     return null;
   }
 
   function readTroopsFromRow($r, unitColIdx) {
-    const tds = $r.children('td');
+    const cells = $r.children('td,th');
     const troops = {};
     Object.keys(unitColIdx).forEach((unit) => {
       const idx = unitColIdx[unit];
-      const $cell = tds.eq(idx);
-      troops[unit] = cleanInt($cell.text());
+      troops[unit] = cleanInt(cells.eq(idx).text());
     });
     return troops;
   }
 
-  async function fetchOverviewDocTry(url) {
-    const html = await fetchText(url);
-    return $.parseHTML(html);
-  }
-
   async function fetchMyVillagesFromOverviewNaAldeia() {
-    // tenta os 2 overviews (porque o TW alterna)
-    // também força group=0 (todas) pra evitar vir vazio
-    const sitterParam = (game_data.player && game_data.player.sitter > 0) ? `&t=${game_data.player.id}` : '';
+    const base = location.origin;
 
-    const candidates = [
-      `/game.php?screen=overview_villages&mode=units&group=0${sitterParam}`,
-      `/game.php?screen=overview&mode=units&group=0${sitterParam}`,
-      `/game.php?screen=overview_villages&mode=units${sitterParam}`,
-      `/game.php?screen=overview&mode=units${sitterParam}`,
-    ];
+    // seu URL confirmado
+    const url = `${base}/game.php?screen=overview_villages&mode=units&group=0`;
 
-    let lastErr = null;
+    const html = await fetchText(url);
+    const doc = $.parseHTML(html);
 
-    for (const url of candidates) {
-      try {
-        const doc = await fetchOverviewDocTry(url);
-        const $t = pickUnitsTableFromHTML(doc);
-        if (!$t) throw new Error('Não achei tabela vis com ícones de unidades.');
+    const $t = pickUnitsTableFromHTML(doc);
+    if (!$t) throw new Error('Não achei a tabela de tropas no overview.');
 
-        const unitColIdx = buildUnitColumnMap($t);
+    const $hdr = findHeaderRowWithUnitIcons($t);
+    if (!$hdr) throw new Error('Não achei o cabeçalho de unidades (ícones).');
 
-        // precisamos destas unidades no cabeçalho
-        const must = ['spear', 'sword', 'heavy'];
-        const miss = must.filter((u) => unitColIdx[u] == null);
-        if (miss.length) throw new Error(`Cabeçalho sem colunas: ${miss.join(', ')}`);
+    const unitColIdx = buildUnitColumnMapFromHeaderRow($hdr);
 
-        const rows = $t.find('tbody tr').toArray().map((r) => $(r));
-        const villagesById = new Map();
+    // garante que colunas críticas existam
+    const must = ['spear', 'sword', 'heavy'];
+    const miss = must.filter((u) => unitColIdx[u] == null);
+    if (miss.length) throw new Error(`Cabeçalho sem colunas: ${miss.join(', ')}`);
 
-        for (let i = 0; i < rows.length; i++) {
-          const $r = rows[i];
-          if (!isNaAldeiaRow($r)) continue;
+    // pega as linhas do tbody (ou todas, mas vamos usar todas e filtrar)
+    const rows = $t.find('tr').toArray().map((r) => $(r));
+    const villagesByKey = new Map();
 
-          const vh = findVillageHeaderAbove(rows, i);
-          if (!vh) continue;
+    for (let i = 0; i < rows.length; i++) {
+      const $r = rows[i];
+      if (!isNaAldeiaRow($r)) continue;
 
-          const troops = readTroopsFromRow($r, unitColIdx);
-          if (!troops || (Object.values(troops).reduce((a, b) => a + b, 0) === 0)) {
-            // ainda assim pode ser vila vazia; aceita (mas evita duplicates)
-          }
+      const vh = findVillageHeaderAbove(rows, i);
+      if (!vh) continue;
 
-          villagesById.set(vh.id, {
-            villageId: vh.id,
-            villageName: vh.name,
-            villageCoords: vh.coords,
-            troops,
-          });
-        }
+      const troops = readTroopsFromRow($r, unitColIdx);
 
-        const villages = Array.from(villagesById.values());
-        if (!villages.length) throw new Error('Não encontrei nenhuma linha "Na aldeia" associada a uma vila.');
+      // key: se tem id usa id; se não, coords
+      const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
 
-        return villages;
-      } catch (e) {
-        lastErr = e;
-        // tenta o próximo
-      }
+      villagesByKey.set(key, {
+        villageId: vh.id || 0,
+        villageName: vh.name,
+        villageCoords: vh.coords,
+        troops,
+      });
     }
 
-    throw new Error(`Não consegui ler suas vilas no overview. (${lastErr ? lastErr.message : 'sem detalhes'})`);
+    const villages = Array.from(villagesByKey.values());
+    if (!villages.length) throw new Error('Não encontrei nenhuma linha "Na aldeia" associada a uma vila.');
+
+    return villages;
   }
 
   // ======= World data =======
@@ -447,11 +457,12 @@
   function renderTable(rows) {
     const body = rows.map((v, i) => {
       const miss = missingString(v.missingTroops);
+      const link = v.villageId ? `/game.php?screen=info_village&id=${v.villageId}` : '#';
       return `
         <tr>
           <td class="right"><b>${i + 1}</b></td>
           <td>
-            <div><a href="/game.php?screen=info_village&id=${v.villageId}" target="_blank" rel="noreferrer noopener"><b>${v.villageName}</b></a></div>
+            <div>${v.villageId ? `<a href="${link}" target="_blank" rel="noreferrer noopener"><b>${v.villageName}</b></a>` : `<b>${v.villageName}</b>`}</div>
             <div class="small">${v.villageCoords}</div>
           </td>
           <td class="right"><b>${intToK(v.pop)}</b></td>
@@ -507,7 +518,7 @@
     const input = readInputs();
     if (input.error) return msgErr(input.error);
 
-    msgInfo('Lendo suas vilas no overview (Na aldeia)...');
+    msgInfo('Lendo suas vilas no overview_villages (Na aldeia)...');
     const myVillages = await fetchMyVillagesFromOverviewNaAldeia();
 
     msgInfo('Carregando dados do mundo (tribos/jogadores/vilas)...');
