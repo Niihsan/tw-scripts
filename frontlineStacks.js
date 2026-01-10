@@ -1,11 +1,9 @@
 /* 
  * Frontline Stacks Planner (Member Edition) — BR138
- * Fix: leitura do overview por ÍCONES (evita colunas deslocadas)
- * Lê "Na aldeia" (inclui apoios) e inclui heavy (cav. pesada) nos cálculos
- *
- * Como usar:
- * 1) Vá no MAPA
- * 2) Cole e execute
+ * Fixes:
+ *  - Lê overview por ícones (sem colunas puladas)
+ *  - Lê "Na aldeia" (inclui apoios)
+ *  - Robustez: tenta /overview_villages e /overview, e resolve vila via "linha Na aldeia" + header acima
  */
 
 (function () {
@@ -13,7 +11,7 @@
 
   const SCRIPT = {
     name: 'Frontline Stacks Planner',
-    version: 'v.member-BR138-fix-columns+heavy',
+    version: 'v.member-BR138-overview-fallback',
     prefix: 'ra_frontline_member_br138',
   };
 
@@ -54,14 +52,12 @@
     req: {
       spear: 15000,
       sword: 15000,
-      heavy: 500, // você estava usando 500 no print — pode mudar
+      heavy: 500,
       spy: 0,
     },
   };
 
   // ======= Helpers =======
-  const tt = (s) => s; // PT-BR direto
-
   function msgInfo(t) { (window.UI && UI.InfoMessage) ? UI.InfoMessage(t) : console.log(t); }
   function msgOk(t) { (window.UI && UI.SuccessMessage) ? UI.SuccessMessage(t) : console.log(t); }
   function msgErr(t) { (window.UI && UI.ErrorMessage) ? UI.ErrorMessage(t) : alert(t); }
@@ -90,11 +86,7 @@
   }
 
   function parseCSV(text) {
-    // simples (map/*.txt do TW é CSV separado por vírgula, sem aspas complexas)
-    return text
-      .trim()
-      .split('\n')
-      .map((l) => l.split(','));
+    return text.trim().split('\n').map((l) => l.split(','));
   }
 
   async function fetchText(url) {
@@ -129,6 +121,20 @@
     @media (max-width: 900px){ #${SCRIPT.prefix} .grid4{ grid-template-columns:1fr; } #${SCRIPT.prefix} .gridReq{ grid-template-columns:1fr 1fr; } }
   `;
 
+  function unitImg(unit) { return `/graphic/unit/unit_${unit}.png`; }
+
+  function unitInput(unit, val) {
+    return `
+      <div>
+        <div class="unitBox">
+          <img src="${unitImg(unit)}" alt="${unit}" />
+          <div style="font-weight:700;">${unit.toUpperCase()}</div>
+        </div>
+        <input type="number" class="raReq" data-unit="${unit}" value="${val}" />
+      </div>
+    `;
+  }
+
   function mountUI() {
     const html = `
       <div id="${SCRIPT.prefix}">
@@ -136,29 +142,29 @@
           <h3>${SCRIPT.name}</h3>
           <div class="small"><b>${SCRIPT.version}</b></div>
         </div>
-        <div class="sub">member • lendo <b>"Na aldeia"</b> do overview (inclui apoios) • leitura por ícones (sem colunas puladas)</div>
+        <div class="sub">member • lendo <b>"Na aldeia"</b> do overview (inclui apoios) • leitura por ícones • fallback para overview alternativo</div>
         <div class="body">
           <div class="grid4">
             <div>
-              <label>${tt('Select enemy tribes')}</label>
+              <label>Select enemy tribes</label>
               <input id="raEnemyTags" type="text" placeholder="Ex: [BO], [TAG2]" />
             </div>
             <div>
-              <label>${tt('Distance')}</label>
+              <label>Distance</label>
               <input id="raDistance" type="number" value="${DEFAULT.distance}" />
             </div>
             <div>
-              <label>${tt('Stack Limit (k)')}</label>
+              <label>Stack Limit (k)</label>
               <input id="raStackLimit" type="number" value="${DEFAULT.stackLimitK}" />
             </div>
             <div>
-              <label>${tt('Scale down per field (k)')}</label>
+              <label>Scale down per field (k)</label>
               <input id="raScaleDown" type="number" value="${DEFAULT.scaleDownPerFieldK}" />
             </div>
           </div>
 
           <div style="margin-top:12px;">
-            <label>${tt('Required Stack Amount')}</label>
+            <label>Required Stack Amount</label>
             <div class="gridReq">
               ${unitInput('spear', DEFAULT.req.spear)}
               ${unitInput('sword', DEFAULT.req.sword)}
@@ -168,8 +174,8 @@
           </div>
 
           <div class="btnRow">
-            <a class="btn" href="javascript:void(0)" id="raCalc">${tt('Calculate Stacks')}</a>
-            <a class="btn" href="javascript:void(0)" id="raExport">${tt('Export')}</a>
+            <a class="btn" href="javascript:void(0)" id="raCalc">Calculate Stacks</a>
+            <a class="btn" href="javascript:void(0)" id="raExport">Export</a>
           </div>
 
           <div class="tblWrap" id="raOut" style="display:none;"></div>
@@ -179,29 +185,8 @@
     `;
 
     const $container = $('#contentContainer');
-    if ($container.length) {
-      $container.prepend(html);
-    } else {
-      $('#content_value').prepend(html);
-    }
-  }
-
-  function unitInput(unit, val) {
-    const img = unitImg(unit);
-    return `
-      <div>
-        <div class="unitBox">
-          <img src="${img}" alt="${unit}" />
-          <div style="font-weight:700;">${unit.toUpperCase()}</div>
-        </div>
-        <input type="number" class="raReq" data-unit="${unit}" value="${val}" />
-      </div>
-    `;
-  }
-
-  function unitImg(unit) {
-    // TW pode usar png/webp; tentamos webp primeiro, mas png quase sempre existe.
-    return `/graphic/unit/unit_${unit}.png`;
+    if ($container.length) $container.prepend(html);
+    else $('#content_value').prepend(html);
   }
 
   function readInputs() {
@@ -227,117 +212,156 @@
     return { tags, distance, stackLimitK, scaleDownK, req };
   }
 
-  // ======= Core: ler overview corretamente =======
-  async function fetchMyVillagesFromOverviewNaAldeia() {
-    // Pega a página overview unidades (a que você mostrou)
-    const url = `/game.php?screen=overview_villages&mode=units${game_data.player.sitter > 0 ? `&t=${game_data.player.id}` : ''}`;
-    const html = await fetchText(url);
-    const doc = $.parseHTML(html);
-
-    // localizar um table.vis grande
+  // ======= Core: ler overview robusto =======
+  function pickUnitsTableFromHTML(doc) {
+    // Pega a tabela "mais provável": tem thead com ícones de unidades.
     const $tables = $(doc).find('table.vis');
-    if (!$tables.length) throw new Error('Não encontrei a tabela do overview.');
+    if (!$tables.length) return null;
 
-    // encontrar uma tabela que tenha ícones de unidade no header
-    let $t = null;
+    let best = null;
+    let bestScore = -1;
+
     $tables.each(function () {
-      const hasUnitIcons = $(this).find('thead img[src*="/graphic/unit/"]').length > 0;
-      if (hasUnitIcons && !$t) $t = $(this);
+      const $t = $(this);
+      const iconCount = $t.find('thead img[src*="/graphic/unit/unit_"]').length;
+      const hasBody = $t.find('tbody tr').length;
+      const score = iconCount * 10 + hasBody;
+      if (score > bestScore && iconCount >= 6) {
+        best = $t;
+        bestScore = score;
+      }
     });
-    if (!$t) throw new Error('Não encontrei cabeçalho com ícones de unidades no overview.');
 
-    // Mapa de coluna: index do <td> pelo unit do cabeçalho
-    // Importante: a linha de dados tem tds, e o cabeçalho tem ths; vamos mapear pela POSIÇÃO relativa.
-    const unitColIdx = {}; // unit -> tdIndex
-    const headerCells = $t.find('thead tr').first().children(); // th/td
+    return best;
+  }
+
+  function buildUnitColumnMap($t) {
+    const unitColIdx = {};
+    const headerCells = $t.find('thead tr').first().children();
     headerCells.each(function (i) {
       const $img = $(this).find('img[src*="/graphic/unit/unit_"]').first();
       if ($img.length) {
-        const src = $img.attr('src');
+        const src = $img.attr('src') || '';
         const m = src.match(/unit_([a-z_]+)\.(png|webp)/i);
         if (m) unitColIdx[m[1]] = i;
       }
     });
-
-    // segurança: precisamos pelo menos spear/sword/heavy aparecerem no header
-    // heavy pode existir mesmo se 0 na aldeia.
-    // Se heavy não existir no header do mundo, ainda assim não dá pra ler.
-    // (No seu mundo aparece heavy no overview)
-    const must = ['spear', 'sword', 'heavy'];
-    const missingHeaders = must.filter((u) => unitColIdx[u] == null);
-    if (missingHeaders.length) {
-      throw new Error(`No overview, não achei colunas para: ${missingHeaders.join(', ')}.`);
-    }
-
-    const rows = $t.find('tbody tr').toArray().map((r) => $(r));
-
-    // Estrutura comum:
-    // - uma linha "vila" (contém link info_village&id=xxx e coords)
-    // - depois linhas: "suas próprias", "Na aldeia", "fora", "em trânsito", "total"
-    // Vamos iterar sequencialmente.
-    const villages = [];
-    let current = null;
-
-    function parseVillageHeaderRow($r) {
-      const $link = $r.find('a[href*="screen=info_village"]').first();
-      if (!$link.length) return null;
-      const href = $link.attr('href') || '';
-      const id = Number(new URL(href, location.origin).searchParams.get('id') || 0);
-      const text = $r.text().replace(/\s+/g, ' ').trim();
-      const cm = text.match(coordsRegex);
-      if (!id || !cm) return null;
-
-      const coords = cm[0];
-      // nome: pega o texto do link
-      const name = ($link.text() || '').trim() || `Vila ${coords}`;
-      return { id, name, coords };
-    }
-
-    function isNaAldeiaRow($r) {
-      // no seu print aparece "Na aldeia" exatamente
-      const t = $r.text().toLowerCase();
-      return t.includes('na aldeia');
-    }
-
-    function readTroopsFromRow($r) {
-      const tds = $r.children('td');
-      const troops = {};
-
-      Object.keys(unitColIdx).forEach((unit) => {
-        const idx = unitColIdx[unit];
-        const $cell = tds.eq(idx);
-        const val = cleanInt($cell.text());
-        troops[unit] = val;
-      });
-
-      return troops;
-    }
-
-    for (let i = 0; i < rows.length; i++) {
-      const $r = rows[i];
-
-      // detect header row of a village
-      const vh = parseVillageHeaderRow($r);
-      if (vh) {
-        // finalize previous if exists
-        if (current && current.troops) villages.push(current);
-        current = { villageId: vh.id, villageName: vh.name, villageCoords: vh.coords, troops: null };
-        continue;
-      }
-
-      if (current && isNaAldeiaRow($r)) {
-        current.troops = readTroopsFromRow($r);
-        continue;
-      }
-    }
-    if (current && current.troops) villages.push(current);
-
-    if (!villages.length) throw new Error('Não consegui ler suas vilas no overview (linha "Na aldeia").');
-
-    return villages;
+    return unitColIdx;
   }
 
-  // ======= World data (enemy tribes/villages) =======
+  function isNaAldeiaRow($r) {
+    // Checa a PRIMEIRA célula de texto (muda conforme mundo/idioma)
+    const txt = ($r.children('td').first().text() || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (txt === 'na aldeia') return true;
+    // fallback: qualquer célula contendo "na aldeia"
+    return $r.text().toLowerCase().includes('na aldeia');
+  }
+
+  function findVillageHeaderAbove(rows, idx) {
+    // Sobe procurando um <a ... screen=info_village ...> com coords na mesma linha
+    for (let j = idx; j >= 0 && j >= idx - 8; j--) {
+      const $r = rows[j];
+      const $link =
+        $r.find('a[href*="screen=info_village"]').first().length
+          ? $r.find('a[href*="screen=info_village"]').first()
+          : $r.find('a[href*="info_village"]').first();
+
+      if ($link.length) {
+        const href = $link.attr('href') || '';
+        let id = 0;
+        try { id = Number(new URL(href, location.origin).searchParams.get('id') || 0); } catch {}
+        const text = $r.text().replace(/\s+/g, ' ').trim();
+        const cm = text.match(coordsRegex);
+        if (id && cm) {
+          const coords = cm[0];
+          const name = ($link.text() || '').trim() || `Vila ${coords}`;
+          return { id, name, coords };
+        }
+      }
+    }
+    return null;
+  }
+
+  function readTroopsFromRow($r, unitColIdx) {
+    const tds = $r.children('td');
+    const troops = {};
+    Object.keys(unitColIdx).forEach((unit) => {
+      const idx = unitColIdx[unit];
+      const $cell = tds.eq(idx);
+      troops[unit] = cleanInt($cell.text());
+    });
+    return troops;
+  }
+
+  async function fetchOverviewDocTry(url) {
+    const html = await fetchText(url);
+    return $.parseHTML(html);
+  }
+
+  async function fetchMyVillagesFromOverviewNaAldeia() {
+    // tenta os 2 overviews (porque o TW alterna)
+    // também força group=0 (todas) pra evitar vir vazio
+    const sitterParam = (game_data.player && game_data.player.sitter > 0) ? `&t=${game_data.player.id}` : '';
+
+    const candidates = [
+      `/game.php?screen=overview_villages&mode=units&group=0${sitterParam}`,
+      `/game.php?screen=overview&mode=units&group=0${sitterParam}`,
+      `/game.php?screen=overview_villages&mode=units${sitterParam}`,
+      `/game.php?screen=overview&mode=units${sitterParam}`,
+    ];
+
+    let lastErr = null;
+
+    for (const url of candidates) {
+      try {
+        const doc = await fetchOverviewDocTry(url);
+        const $t = pickUnitsTableFromHTML(doc);
+        if (!$t) throw new Error('Não achei tabela vis com ícones de unidades.');
+
+        const unitColIdx = buildUnitColumnMap($t);
+
+        // precisamos destas unidades no cabeçalho
+        const must = ['spear', 'sword', 'heavy'];
+        const miss = must.filter((u) => unitColIdx[u] == null);
+        if (miss.length) throw new Error(`Cabeçalho sem colunas: ${miss.join(', ')}`);
+
+        const rows = $t.find('tbody tr').toArray().map((r) => $(r));
+        const villagesById = new Map();
+
+        for (let i = 0; i < rows.length; i++) {
+          const $r = rows[i];
+          if (!isNaAldeiaRow($r)) continue;
+
+          const vh = findVillageHeaderAbove(rows, i);
+          if (!vh) continue;
+
+          const troops = readTroopsFromRow($r, unitColIdx);
+          if (!troops || (Object.values(troops).reduce((a, b) => a + b, 0) === 0)) {
+            // ainda assim pode ser vila vazia; aceita (mas evita duplicates)
+          }
+
+          villagesById.set(vh.id, {
+            villageId: vh.id,
+            villageName: vh.name,
+            villageCoords: vh.coords,
+            troops,
+          });
+        }
+
+        const villages = Array.from(villagesById.values());
+        if (!villages.length) throw new Error('Não encontrei nenhuma linha "Na aldeia" associada a uma vila.');
+
+        return villages;
+      } catch (e) {
+        lastErr = e;
+        // tenta o próximo
+      }
+    }
+
+    throw new Error(`Não consegui ler suas vilas no overview. (${lastErr ? lastErr.message : 'sem detalhes'})`);
+  }
+
+  // ======= World data =======
   async function fetchWorldData() {
     const base = location.origin;
     const [villTxt, plyTxt, allyTxt] = await Promise.all([
@@ -345,14 +369,10 @@
       fetchText(`${base}/map/player.txt`),
       fetchText(`${base}/map/ally.txt`),
     ]);
-    const villages = parseCSV(villTxt);
-    const players = parseCSV(plyTxt);
-    const allies = parseCSV(allyTxt);
-    return { villages, players, allies };
+    return { villages: parseCSV(villTxt), players: parseCSV(plyTxt), allies: parseCSV(allyTxt) };
   }
 
   function tribeIdsFromTags(allies, tags) {
-    // ally.txt: id,name,tag,players,villages,points,all_points,rank (geralmente)
     const wanted = new Set(tags.map((t) => t.toLowerCase()));
     return allies
       .filter((a) => a[0] && a[2] && wanted.has(String(a[2]).toLowerCase()))
@@ -362,7 +382,6 @@
 
   function playerIdsFromTribeIds(players, tribeIds) {
     const set = new Set(tribeIds.map(Number));
-    // player.txt: id,name,ally_id,villages,points,rank
     return players
       .filter((p) => p[0] && set.has(Number(p[2])))
       .map((p) => Number(p[0]))
@@ -371,7 +390,6 @@
 
   function coordsFromPlayerIds(worldVillages, playerIds) {
     const set = new Set(playerIds.map(Number));
-    // village.txt: id,name,x,y,player_id,points,type
     return worldVillages
       .filter((v) => v[0] && set.has(Number(v[4])))
       .map((v) => `${v[2]}|${v[3]}`);
@@ -382,8 +400,7 @@
     let total = 0;
     for (const [u, n] of Object.entries(troops || {})) {
       if (!n) continue;
-      const pop = UNITS_POP[u] != null ? UNITS_POP[u] : 0;
-      total += pop * n;
+      total += (UNITS_POP[u] != null ? UNITS_POP[u] : 0) * n;
     }
     return total;
   }
@@ -397,15 +414,10 @@
       const need = Number(needRaw) || 0;
       if (need <= 0) continue;
 
-      // spy não escala (mas pode entrar no missing)
       const effectiveNeed = (unit === 'spy') ? need : Math.max(0, need - scale);
-
       const have = Number(troops[unit]) || 0;
-      if (effectiveNeed > 0 && have < effectiveNeed) {
-        missing[unit] = (effectiveNeed - have);
-      } else if (effectiveNeed > 0) {
-        missing[unit] = 0;
-      }
+
+      missing[unit] = effectiveNeed > have ? (effectiveNeed - have) : 0;
     }
     return missing;
   }
@@ -433,8 +445,7 @@
   }
 
   function renderTable(rows) {
-    const body = rows.map((r, i) => {
-      const v = r;
+    const body = rows.map((v, i) => {
       const miss = missingString(v.missingTroops);
       return `
         <tr>
@@ -455,10 +466,10 @@
         <thead>
           <tr>
             <th style="width:56px;">#</th>
-            <th>${tt('Village')}</th>
-            <th style="width:110px;" class="right">${tt('Pop.')}</th>
-            <th style="width:110px;" class="right">${tt('Distance')}</th>
-            <th style="width:320px;">${tt('Missing Troops')}</th>
+            <th>Village</th>
+            <th style="width:110px;" class="right">Pop.</th>
+            <th style="width:110px;" class="right">Distance</th>
+            <th style="width:320px;">Missing Troops</th>
           </tr>
         </thead>
         <tbody>${body}</tbody>
@@ -507,12 +518,10 @@
 
     const enemyPlayers = playerIdsFromTribeIds(players, tribeIds);
     const enemyCoords = coordsFromPlayerIds(worldVillages, enemyPlayers);
-
     if (!enemyCoords.length) return msgErr('Não consegui obter coordenadas das vilas inimigas (village.txt).');
 
     const rows = [];
     for (const v of myVillages) {
-      // distancia mínima até qualquer vila inimiga
       let minD = Infinity;
       for (const ec of enemyCoords) {
         const d = dist(ec, v.villageCoords);
@@ -562,8 +571,7 @@
     $('#raExport').on('click', (e) => {
       e.preventDefault();
       if (!lastRows.length) return msgErr('Nada para exportar.');
-      const bb = buildBBCode(lastRows);
-      copyToClipboard(bb);
+      copyToClipboard(buildBBCode(lastRows));
       msgOk('BBCode copiado!');
     });
   }
