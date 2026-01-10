@@ -3,7 +3,7 @@
 
   const SCRIPT = {
     name: 'Frontline Stacks Planner',
-    version: 'member-ui (fix: read units from end of Na aldeia row)',
+    version: 'v2.0 - FIX: leitura correta de colunas',
     prefix: 'ra_frontline_member',
   };
 
@@ -299,27 +299,69 @@
     return null;
   }
 
-  // ✅ FIX DEFINITIVO DO “PULO”: ler unidades pelo FINAL da linha "Na aldeia"
-  function readTroopsFromNaAldeiaRow_TAILSLICE($r) {
+  // ✅ NOVA FUNÇÃO CORRIGIDA: detecta header com ícones de unidades e usa como referência
+  function readTroopsFromNaAldeiaRow($r, $table) {
     const troops = {};
     const units = (game_data && Array.isArray(game_data.units) && game_data.units.length)
       ? game_data.units.slice()
       : ['spear','sword','axe','archer','spy','light','marcher','heavy','ram','catapult','knight','snob'];
 
-    const $cells = $r.children('td');
-    if (!$cells.length) return troops;
+    // Procura a linha de header com ícones de unidades (normalmente logo acima)
+    const $headerRow = $table.find('tr').filter(function() {
+      return $(this).find('img[src*="/graphic/unit/unit_"]').length >= 8;
+    }).first();
 
-    // pega as últimas N colunas (N = quantidade de unidades do mundo)
-    const N = units.length;
-    const start = Math.max(0, $cells.length - N);
-
-    // mapear em ordem EXATA do mundo (isso impede deslocamento)
-    for (let i = 0; i < N; i++) {
-      const unit = units[i];
-      const txt = $cells.eq(start + i).text();
-      troops[unit] = cleanInt(txt);
+    if (!$headerRow.length) {
+      console.warn('Header com ícones de unidades não encontrado, usando método fallback');
+      return readTroopsFromNaAldeiaRow_FALLBACK($r, units);
     }
 
+    // Mapeia cada unidade para sua posição de coluna baseada no header
+    const unitColumnMap = {};
+    $headerRow.find('th, td').each(function(colIdx) {
+      const $cell = $(this);
+      const $img = $cell.find('img[src*="/graphic/unit/unit_"]');
+      if ($img.length) {
+        const src = $img.attr('src') || '';
+        const match = src.match(/unit_(\w+)\.png/);
+        if (match) {
+          unitColumnMap[match[1]] = colIdx;
+        }
+      }
+    });
+
+    // Lê os valores da linha "Na aldeia" usando o mapa de colunas
+    const $cells = $r.children('td');
+    for (const unit of units) {
+      const colIdx = unitColumnMap[unit];
+      if (colIdx !== undefined && colIdx < $cells.length) {
+        const txt = $cells.eq(colIdx).text();
+        troops[unit] = cleanInt(txt);
+      } else {
+        troops[unit] = 0;
+      }
+    }
+
+    return troops;
+  }
+
+  // Método fallback caso não ache header com ícones
+  function readTroopsFromNaAldeiaRow_FALLBACK($r, units) {
+    const troops = {};
+    const $cells = $r.children('td');
+    
+    // Pula primeira coluna ("Na aldeia" texto) e lê as próximas N colunas
+    const startCol = 1;
+    for (let i = 0; i < units.length; i++) {
+      const colIdx = startCol + i;
+      const unit = units[i];
+      if (colIdx < $cells.length) {
+        const txt = $cells.eq(colIdx).text();
+        troops[unit] = cleanInt(txt);
+      } else {
+        troops[unit] = 0;
+      }
+    }
     return troops;
   }
 
@@ -343,7 +385,7 @@
       const vh = findVillageHeaderAbove(rows, i);
       if (!vh) continue;
 
-      const troops = readTroopsFromNaAldeiaRow_TAILSLICE($r);
+      const troops = readTroopsFromNaAldeiaRow($r, $t);
 
       const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
       villagesByKey.set(key, {
