@@ -275,7 +275,8 @@
   }
 
   function findVillageHeaderAbove(rows, idx) {
-    for (let j = idx; j >= 0 && j >= idx - 12; j--) {
+    // Procura IMEDIATAMENTE acima (não mais de 3 linhas) para evitar pegar vila errada
+    for (let j = idx - 1; j >= 0 && j >= idx - 3; j--) {
       const $r = rows[j];
       const text = $r.text().replace(/\s+/g, ' ').trim();
       const cm = text.match(coordsRegex);
