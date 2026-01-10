@@ -3,7 +3,7 @@
 
   const SCRIPT = {
     name: 'Frontline Stacks Planner',
-    version: 'member-ui (fix header+row virtual cols + display tags with [] )',
+    version: 'member-ui (fix: read units from end of Na aldeia row)',
     prefix: 'ra_frontline_member',
   };
 
@@ -28,7 +28,7 @@
     distance: 5,
     stackLimitK: 100,
     scaleDownPerFieldK: 5,
-    req: { spear: 15000, sword: 15000, heavy: 15000, spy: 0 }, // heavy agora aparece no missing
+    req: { spear: 15000, sword: 15000, heavy: 15000, spy: 0 },
   };
 
   function msgInfo(t) { (window.UI && UI.InfoMessage) ? UI.InfoMessage(t) : console.log(t); }
@@ -58,7 +58,6 @@
     return val + u.s;
   }
 
-  // ========= CSV tolerant =========
   function parseCSV(text) {
     if (text == null) return [];
     text = String(text).replace(/^\uFEFF/, '').replace(/\r/g, '').trim();
@@ -71,7 +70,6 @@
 
   async function fetchText(url) { return $.ajax({ url, method: 'GET' }); }
 
-  // ========= UI =========
   const style = `
     #${SCRIPT.prefix}{ border:1px solid #603000; background:#f4e4bc; margin:10px 0 15px; }
     #${SCRIPT.prefix} *{ box-sizing:border-box; }
@@ -196,7 +194,7 @@
               <a class="btn" href="javascript:void(0)" id="raApplyTribes"><b>Aplicar</b></a>
             </div>
           </div>
-          <div class="small" style="margin-top:6px;">Mostrando tags sempre como <b>[TAG]</b> (sem confundir BO com -B.O-).</div>
+          <div class="small" style="margin-top:6px;">Mostrando tags como <b>[TAG]</b> sem confundir BO com -B.O-.</div>
           <div class="list" id="raTribeList"></div>
         </div>
       </div>
@@ -209,7 +207,6 @@
     else $('#content_value').prepend(html);
   }
 
-  // ===== Persistência =====
   const LS_KEY = `${SCRIPT.prefix}:selectedTags`;
   function loadSelectedTags() {
     try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); }
@@ -219,8 +216,6 @@
     localStorage.setItem(LS_KEY, JSON.stringify(tags || []));
   }
 
-  // ✅ Mantém '.' e '-' para NÃO colidir BO com -B.O-
-  // ✅ Aceita input com [] (o user pode digitar [BO] no filtro etc)
   function normalizeTag(t) {
     return String(t || '')
       .replace(/^\uFEFF/, '')
@@ -228,8 +223,8 @@
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .trim()
       .toUpperCase()
-      .replace(/[\[\]\s]/g, '')        // remove só [] e espaços
-      .replace(/[^A-Z0-9.\-]/g, '');   // mantém '.' e '-'
+      .replace(/[\[\]\s]/g, '')
+      .replace(/[^A-Z0-9.\-]/g, '');
   }
 
   function displayTag(tagNormalized) {
@@ -259,50 +254,6 @@
       if (score > bestScore && iconCount >= 8) { best = $t; bestScore = score; }
     });
     return best;
-  }
-
-  function findHeaderRowWithUnitIcons($t) {
-    const $rows = $t.find('tr').toArray().map(r => $(r));
-    for (const $r of $rows) {
-      const icons = $r.find('img[src*="/graphic/unit/unit_"]');
-      if (icons.length >= 6) return $r;
-    }
-    return null;
-  }
-
-  // ✅ virtual cells (colspan-aware)
-  function getVirtualCells($row) {
-    const out = [];
-    let col = 0;
-    const $cells = $row.children('td,th');
-    $cells.each(function () {
-      const $c = $(this);
-      const span = Math.max(1, parseInt($c.attr('colspan') || '1', 10) || 1);
-      out.push({ $c, start: col, span });
-      col += span;
-    });
-    return out;
-  }
-
-  function textAtVirtualIndex(virtualCells, idx) {
-    for (const it of virtualCells) {
-      if (idx >= it.start && idx < it.start + it.span) return it.$c.text();
-    }
-    return '';
-  }
-
-  // ✅ FIX principal: mapear colunas do HEADER por índice virtual (start)
-  function headerUnitVirtualIndexMap($headerRow) {
-    const map = {};
-    const vc = getVirtualCells($headerRow);
-    for (const it of vc) {
-      const $img = it.$c.find('img[src*="/graphic/unit/unit_"]').first();
-      if (!$img.length) continue;
-      const src = $img.attr('src') || '';
-      const m = src.match(/unit_([a-z_]+)\.(png|webp)/i);
-      if (m) map[m[1]] = it.start; // índice VIRTUAL!
-    }
-    return map;
   }
 
   function isNaAldeiaRow($r) {
@@ -348,14 +299,27 @@
     return null;
   }
 
-  function readTroopsFromNaAldeiaRow($r, unitVirtualMap) {
+  // ✅ FIX DEFINITIVO DO “PULO”: ler unidades pelo FINAL da linha "Na aldeia"
+  function readTroopsFromNaAldeiaRow_TAILSLICE($r) {
     const troops = {};
-    const vc = getVirtualCells($r);
+    const units = (game_data && Array.isArray(game_data.units) && game_data.units.length)
+      ? game_data.units.slice()
+      : ['spear','sword','axe','archer','spy','light','marcher','heavy','ram','catapult','knight','snob'];
 
-    for (const [unit, vIdx] of Object.entries(unitVirtualMap)) {
-      const raw = textAtVirtualIndex(vc, vIdx);
-      troops[unit] = cleanInt(raw);
+    const $cells = $r.children('td');
+    if (!$cells.length) return troops;
+
+    // pega as últimas N colunas (N = quantidade de unidades do mundo)
+    const N = units.length;
+    const start = Math.max(0, $cells.length - N);
+
+    // mapear em ordem EXATA do mundo (isso impede deslocamento)
+    for (let i = 0; i < N; i++) {
+      const unit = units[i];
+      const txt = $cells.eq(start + i).text();
+      troops[unit] = cleanInt(txt);
     }
+
     return troops;
   }
 
@@ -369,20 +333,6 @@
     const $t = pickUnitsTableFromHTML(doc);
     if (!$t) throw new Error('Não achei a tabela de tropas no overview.');
 
-    const $hdr = findHeaderRowWithUnitIcons($t);
-    if (!$hdr) throw new Error('Não achei o cabeçalho de unidades.');
-
-    const unitVirtualMap = headerUnitVirtualIndexMap($hdr);
-
-    // mínimo necessário
-    const must = ['spear', 'sword', 'heavy', 'spy'];
-    for (const u of must) {
-      if (!(u in unitVirtualMap)) {
-        // não bloqueia o script inteiro — só alerta (mundo pode não ter algumas unidades)
-        console.warn(`[${SCRIPT.name}] Cabeçalho não contém ${u}.`);
-      }
-    }
-
     const rows = $t.find('tr').toArray().map((r) => $(r));
     const villagesByKey = new Map();
 
@@ -393,7 +343,7 @@
       const vh = findVillageHeaderAbove(rows, i);
       if (!vh) continue;
 
-      const troops = readTroopsFromNaAldeiaRow($r, unitVirtualMap);
+      const troops = readTroopsFromNaAldeiaRow_TAILSLICE($r);
 
       const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
       villagesByKey.set(key, {
@@ -409,7 +359,6 @@
     return villages;
   }
 
-  // ===== World data =====
   async function fetchWorldData() {
     const base = location.origin;
     const [villTxt, plyTxt, allyTxt] = await Promise.all([
@@ -461,7 +410,6 @@
       const need = Number(needRaw) || 0;
       if (need <= 0) continue;
 
-      // mantém spy + heavy sem scale (como era)
       const nonScaling = (unit === 'spy' || unit === 'heavy');
       const effectiveNeed = nonScaling ? need : Math.max(0, need - scale);
 
@@ -566,7 +514,6 @@
     return { tags: selectedTags.slice(), distance, stackLimitK, scaleDownK, req };
   }
 
-  // ========= Modal =========
   let cachedAllies = null;
   let alliesLoaded = false;
 
@@ -588,7 +535,7 @@
     }
 
     const qRaw = ($('#raTribeFilter').val() || '').trim();
-    const q = normalizeTag(qRaw); // aceita filtro com [BO]
+    const q = normalizeTag(qRaw);
     const items = [];
 
     for (const a of cachedAllies) {
@@ -598,7 +545,6 @@
       const tag = normalizeTag(tagRaw);
       if (!id || !tag) continue;
 
-      // filtro: compara com tag normalizada ou nome
       if (q) {
         const hay = `${tag} ${String(name).toUpperCase()}`;
         if (!hay.includes(q)) continue;
@@ -630,7 +576,6 @@
     alliesLoaded = true;
   }
 
-  // ========= Main =========
   let lastRows = [];
 
   async function calculate() {
