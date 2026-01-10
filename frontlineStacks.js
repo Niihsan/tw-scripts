@@ -1,61 +1,59 @@
 /*
- * Frontline Stacks Planner — MEMBER version (BR138)
- * FIX 1: Lê tropas "Na aldeia" do overview_villages&mode=units (inclui apoios)
- * FIX 2: Agora encontra a TABELA correta (nem sempre é a primeira table.vis)
+ * Frontline Stacks Planner — Member (BR138)
+ * Ajuste ÚNICO: trocar leitura de "suas próprias" para "Na aldeia"
+ * (Na aldeia = inclui apoios presentes na vila)
  */
 
 if (typeof DEBUG !== 'boolean') DEBUG = false;
 if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
 
 (function () {
-  const START_TS = Date.now();
+  const script = {
+    name: 'Frontline Stacks Planner',
+    version: 'member-NA-ALDEIA',
+    prefix: 'frontlineStacksPlanner_member',
+  };
 
-  function ready() {
+  const coordsRegex = /\d{1,3}\|\d{1,3}/g;
+
+  const unitsPop = {
+    spear: 1, sword: 1, axe: 1, archer: 1,
+    spy: 2, light: 4, marcher: 5, heavy: 6,
+    ram: 5, catapult: 8, knight: 10, snob: 100,
+  };
+
+  const DEFAULT_VALUES = { DISTANCE: 5, STACK: 100, SCALE_PER_FIELD: 5 };
+
+  function bootOk() {
     return window.jQuery && window.game_data && window.UI;
   }
+
   function waitBoot() {
-    if (ready()) return main().catch(console.error);
-    if (Date.now() - START_TS > 10000) {
-      console.error('[FSP] Falha no boot: jQuery/UI/game_data ausentes.');
-      return;
-    }
-    setTimeout(waitBoot, 100);
+    if (bootOk()) return main().catch(console.error);
+    setTimeout(waitBoot, 80);
   }
   waitBoot();
 
   async function main() {
-    const scriptData = {
-      prefix: 'frontlineStacksPlanner',
-      name: 'Frontline Stacks Planner',
-      version: 'BR138-member-overviewNAaldeia-v2',
-    };
-
-    const coordsRegex = /\d{1,3}\|\d{1,3}/g;
-    const unitsPop = {
-      spear: 1, sword: 1, axe: 1, archer: 1,
-      spy: 2, light: 4, marcher: 5, heavy: 6,
-      ram: 5, catapult: 8, knight: 10, snob: 100,
-    };
-
-    const DEFAULT_VALUES = { DISTANCE: 5, STACK: 100, SCALE_PER_FIELD: 5 };
-
     const screen = new URL(location.href).searchParams.get('screen');
     if (screen !== 'map') {
-      UI.InfoMessage(`[${scriptData.name}] Redirecionando para o mapa...`);
+      UI.InfoMessage(`[${script.name}] Redirecionando para o mapa...`);
       location.assign(game_data.link_base_pure + 'map');
       return;
     }
 
-    UI.SuccessMessage(`[${scriptData.name}] carregado.`);
+    UI.SuccessMessage(`[${script.name}] carregado (${script.version}).`);
 
     // World data
-    const worldVillages = await jQuery.get('/map/village.txt');
-    const worldPlayers = await jQuery.get('/map/player.txt');
-    const worldTribes = await jQuery.get('/map/ally.txt');
+    const [txtVillages, txtPlayers, txtTribes] = await Promise.all([
+      jQuery.get('/map/village.txt'),
+      jQuery.get('/map/player.txt'),
+      jQuery.get('/map/ally.txt'),
+    ]);
 
-    const villages = parseWorldVillage(worldVillages);
-    const players = parseWorldPlayers(worldPlayers);
-    const tribes = parseWorldTribes(worldTribes);
+    const villages = parseWorldVillage(txtVillages);
+    const players = parseWorldPlayers(txtPlayers);
+    const tribes = parseWorldTribes(txtTribes);
 
     renderUI(tribes);
 
@@ -65,7 +63,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       const input = collectUserInput();
       if (!input.chosenTribes.length) return;
 
-      // inimigos (coords)
       const tribeIds = getTribeIdsByTag(input.chosenTribes, tribes);
       if (!tribeIds.length) {
         UI.ErrorMessage('Tribo(s) não encontrada(s).');
@@ -81,68 +78,64 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         .map(v => v.coords);
 
       if (!enemyCoords.length) {
-        UI.ErrorMessage('Não consegui obter aldeias das tribos selecionadas (map data).');
+        UI.ErrorMessage('Não consegui obter aldeias das tribos selecionadas.');
         return;
       }
 
-      // LER overview UNA VEZ: tropas "Na aldeia" (inclui apoios)
-      UI.InfoMessage('Lendo overview (Tropas → "Na aldeia") para incluir apoios…');
+      // ✅ LEITURA DO OVERVIEW: AGORA "NA ALDEIA"
+      UI.InfoMessage('Lendo overview: Tropas → "Na aldeia" (inclui apoios)…');
       let overview;
       try {
-        overview = await fetchOverviewUnitsNaAldeia();
+        overview = await fetchOverviewUnitsNaAldeia_SIMPLE();
       } catch (err) {
-        console.error('[FSP] overview parse error:', err);
-        UI.ErrorMessage('Falha ao ler/parsing do overview. Veja o console (F12).');
+        console.error('[FSP] erro overview:', err);
+        UI.ErrorMessage('Não consegui ler suas vilas no overview.');
         return;
       }
 
       const myVillages = overview.myVillages;        // [{villageId, villageName, coords}]
-      const troopsByVillageId = overview.troopsById; // { [id]: {unit: amount} }
+      const troopsById = overview.troopsById;        // { [id]: {unit: amount} }
 
       if (!myVillages.length) {
         UI.ErrorMessage('Não consegui ler suas vilas no overview.');
         return;
       }
 
-      // suas aldeias perto do front
-      const distanceLimit = input.distance;
+      // Filtra suas aldeias no raio do inimigo
       const candidates = [];
-
       for (const v of myVillages) {
         let best = Infinity;
         for (const ec of enemyCoords) {
           const d = dist(ec, v.coords);
           if (d < best) best = d;
-          if (best <= distanceLimit) break;
+          if (best <= input.distance) break;
         }
-        if (best <= distanceLimit) {
+        if (best <= input.distance) {
           candidates.push({ ...v, fieldsAway: Math.round(best * 100) / 100 });
         }
       }
 
       if (!candidates.length) {
-        UI.SuccessMessage('Nenhuma aldeia no raio informado.');
+        UI.SuccessMessage('Nenhuma aldeia sua está dentro do raio informado.');
         jQuery('#raStacks').hide().empty();
         jQuery('#raExport').attr('data-stack-plans', '');
         return;
       }
 
-      // avaliar stacks usando "Na aldeia"
-      const stackPopLimit = (input.stackLimit * 1000);
+      const stackPopLimit = input.stackLimit * 1000;
       const need = [];
 
       for (const v of candidates.sort((a, b) => a.fieldsAway - b.fieldsAway)) {
-        const troops = troopsByVillageId[v.villageId] || {};
+        const troops = troopsById[v.villageId] || {};
         const pop = calcPop(troops);
 
-        let should = pop < stackPopLimit;
+        let shouldAdd = pop < stackPopLimit;
 
-        // checa mínimos exigidos de unidades
         for (const [unit, amt] of Object.entries(input.unitAmounts)) {
-          if ((troops[unit] || 0) < amt) should = true;
+          if ((troops[unit] || 0) < amt) shouldAdd = true;
         }
 
-        if (should) {
+        if (shouldAdd) {
           const missingTroops = calcMissingTroops(
             troops,
             input.unitAmounts,
@@ -154,7 +147,7 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       }
 
       if (!need.length) {
-        UI.SuccessMessage('Todas as aldeias já estão stackadas dentro do critério.');
+        UI.SuccessMessage('Todas as aldeias já estão stackadas no critério.');
         jQuery('#raStacks').hide().empty();
         jQuery('#raExport').attr('data-stack-plans', '');
         return;
@@ -162,7 +155,7 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
 
       jQuery('#raStacks').show().html(buildTable(need));
       jQuery('#raExport').attr('data-stack-plans', JSON.stringify(need));
-      UI.SuccessMessage(`OK: ${candidates.length} aldeias no raio; ${need.length} precisando stack.`);
+      UI.SuccessMessage(`OK: ${candidates.length} no raio; ${need.length} precisando stack.`);
     });
 
     jQuery('#raExport').on('click', (e) => {
@@ -182,67 +175,43 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       UI.SuccessMessage('Copiado para a área de transferência!');
     });
 
-    // ----------------- Overview parser (FIXADO) -----------------
-
-    async function fetchOverviewUnitsNaAldeia() {
-      const base =
+    // ============================================================
+    // ✅ OVERVIEW PARSER “ANTIGO” (SIMPLES) — Só troca a linha alvo
+    // ============================================================
+    async function fetchOverviewUnitsNaAldeia_SIMPLE() {
+      const url =
         `/game.php?screen=overview_villages&mode=units&village=${game_data.village.id}` +
         (game_data.player.sitter != '0' ? `&t=${game_data.player.id}` : '');
 
-      const html = await jQuery.get(base);
-      const doc = jQuery(jQuery.parseHTML(html));
+      const html = await jQuery.get(url);
+      const $doc = jQuery(jQuery.parseHTML(html));
 
-      // 1) achar a tabela CORRETA: a que contém "Na aldeia" ou "suas próprias" no tbody
-      const tables = doc.find('table.vis');
-      if (!tables.length) throw new Error('Nenhuma table.vis encontrada no overview HTML.');
+      // “Versão antiga”: pega a tabela vis que tem coords no texto (normalmente é a certa)
+      const $tables = $doc.find('table.vis');
+      if (!$tables.length) throw new Error('Sem table.vis');
 
       let $table = null;
-      tables.each(function () {
-        const $t = jQuery(this);
-        const txt = $t.text().toLowerCase();
-        // sinais fortes de ser a tabela de tropas:
-        // - aparece "na aldeia" e "suas próprias" e/ou "em trânsito" e "total"
-        const hasNaAldeia = txt.includes('na aldeia');
-        const hasSuas = txt.includes('suas') && txt.includes('própr');
-        const hasTotal = txt.includes('total');
-        const hasTransito = txt.includes('trânsito') || txt.includes('transito');
-        if (hasNaAldeia && (hasSuas || hasTotal || hasTransito)) {
-          $table = $t;
-          return false; // break each()
+      $tables.each(function () {
+        const txt = jQuery(this).text();
+        if (coordsRegex.test(txt)) {
+          $table = jQuery(this);
+          return false;
         }
       });
+      if (!$table || !$table.length) $table = $tables.eq(0);
 
-      if (!$table || !$table.length) {
-        // fallback: pega a maior table.vis (normalmente a de unidades)
-        let best = null;
-        let bestRows = 0;
-        tables.each(function () {
-          const rows = jQuery(this).find('tbody tr').length;
-          if (rows > bestRows) {
-            bestRows = rows;
-            best = jQuery(this);
-          }
-        });
-        $table = best;
-      }
-
-      if (!$table || !$table.length) throw new Error('Tabela alvo não encontrada.');
-
-      // 2) mapear colunas de unidades pelos ícones no THEAD
+      // Mapear colunas por ícones das unidades
       const unitColIndex = {};
       $table.find('thead img[src*="/graphic/unit/unit_"]').each(function () {
         const src = jQuery(this).attr('src') || '';
         const m = src.match(/unit_([a-z0-9_]+)\./i);
         if (!m) return;
-        // índice é o TH pai
-        const th = jQuery(this).closest('th');
-        const i = th.index();
-        if (i >= 0) unitColIndex[m[1]] = i;
+        const thIndex = jQuery(this).closest('th').index();
+        if (thIndex >= 0) unitColIndex[m[1]] = thIndex;
       });
 
       if (DEBUG) console.log('[FSP] unitColIndex', unitColIndex);
 
-      // 3) varrer as linhas e montar blocos por aldeia
       const myVillages = [];
       const troopsById = {};
 
@@ -251,10 +220,10 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
 
       $rows.each(function () {
         const $tr = jQuery(this);
-        const t = $tr.text().trim();
-        const coords = (t.match(coordsRegex) || [null])[0];
+        const txt = $tr.text().trim();
+        const coords = (txt.match(coordsRegex) || [null])[0];
 
-        // bloco de aldeia costuma ter link com ?village=ID e coords no texto
+        // Detecta “linha de cabeçalho da aldeia” (tem coords + link com village/id)
         const $a = $tr.find('a[href*="village="], a[href*="info_village"]').first();
         if ($a.length && coords) {
           const href = $a.attr('href') || '';
@@ -272,11 +241,12 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
 
         if (!currentVillage) return;
 
-        // linha "Na aldeia" => pega as colunas de unidades
+        // ✅ AQUI É O “ÚNICO AJUSTE”: era "suas próprias" e agora é "na aldeia"
         const $tds = $tr.find('td');
-        const firstCell = ($tds.eq(0).text() || '').trim().toLowerCase();
+        const first = ($tds.eq(0).text() || '').trim().toLowerCase();
 
-        if (firstCell === 'na aldeia') {
+        // aceita variações: "na aldeia", "na aldeia " etc.
+        if (first === 'na aldeia') {
           const vid = currentVillage.villageId;
           const troops = {};
 
@@ -293,15 +263,14 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
       });
 
       if (DEBUG) {
-        console.log('[FSP] myVillages:', myVillages.length, myVillages.slice(0, 3));
-        console.log('[FSP] troopsById sample keys:', Object.keys(troopsById).slice(0, 5));
+        console.log('[FSP] myVillages', myVillages.length, myVillages.slice(0, 3));
+        console.log('[FSP] troopsById keys', Object.keys(troopsById).slice(0, 5));
       }
 
       return { myVillages, troopsById };
     }
 
     // ----------------- UI -----------------
-
     function renderUI(tribesArr) {
       const tribeDatalist = tribesArr
         .map(t => `<option value="${escapeHtml(t.tag)}">`)
@@ -319,10 +288,10 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         .join('');
 
       const html = `
-        <div id="${scriptData.prefix}" style="border:1px solid #603000;background:#f4e4bc;margin:10px 0 15px;">
+        <div id="${script.prefix}" style="border:1px solid #603000;background:#f4e4bc;margin:10px 0 15px;">
           <div style="background:#c1a264 url(/graphic/screen/tableheader_bg3.png) repeat-x;padding:10px;">
-            <h3 style="margin:0;line-height:1;">${scriptData.name}</h3>
-            <small><strong>${scriptData.version}</strong> — lê "Na aldeia" do overview (inclui apoios)</small>
+            <h3 style="margin:0;line-height:1;">${script.name}</h3>
+            <small><strong>${script.version}</strong> — lendo "Na aldeia" do overview</small>
           </div>
           <div style="padding:10px;">
             <div style="display:grid;grid-template-columns: 1.3fr .9fr .8fr .8fr;gap:15px;">
@@ -363,7 +332,7 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         </div>
       `;
 
-      if (!document.getElementById(scriptData.prefix)) {
+      if (!document.getElementById(script.prefix)) {
         jQuery('#contentContainer').prepend(html);
         jQuery('#mobileContent').prepend(html);
       }
@@ -392,7 +361,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
     }
 
     // ----------------- Core math -----------------
-
     function calcPop(troops) {
       let total = 0;
       for (const [unit, amount] of Object.entries(troops || {})) {
@@ -465,7 +433,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
     }
 
     // ----------------- Utilities -----------------
-
     function getTribeIdsByTag(tags, tribeArr) {
       const wanted = new Set(tags.map(s => s.trim()));
       return tribeArr.filter(t => wanted.has(t.tag)).map(t => t.id);
