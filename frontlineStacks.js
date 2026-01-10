@@ -399,6 +399,15 @@
 
       const troops = readTroopsFromNaAldeiaRow($r, $t);
 
+      // DEBUG: loga a primeira vila com tropas
+      if (villagesByKey.size === 0 && (troops.spear > 0 || troops.sword > 0)) {
+        console.log('DEBUG primeira vila:', vh.coords);
+        console.log('  spear:', troops.spear);
+        console.log('  sword:', troops.sword);
+        console.log('  axe:', troops.axe);
+        console.log('  heavy:', troops.heavy);
+      }
+
       const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
       villagesByKey.set(key, {
         villageId: vh.id || 0,
