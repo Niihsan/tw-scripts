@@ -526,8 +526,13 @@
 
   function missingString(missing) {
     const lines = [];
-    for (const [u, v] of Object.entries(missing)) {
-      if ((Number(v) || 0) > 0) lines.push(`${u}: ${v}`);
+    // Ordena por unidade para manter consistência
+    const order = ['spear', 'sword', 'axe', 'spy', 'light', 'heavy', 'ram', 'catapult', 'knight', 'snob'];
+    for (const u of order) {
+      const v = missing[u];
+      if (v != null && Number(v) > 0) {
+        lines.push(`${u}: ${v}`);
+      }
     }
     return lines.length ? lines.join('\n') : 'OK';
   }
@@ -676,6 +681,15 @@
     msgInfo('Lendo suas vilas no overview (Na aldeia)...');
     const myVillages = await fetchMyVillagesFromOverviewNaAldeia();
 
+    // DEBUG: mostra os valores lidos da vila 060F
+    const vila060F = myVillages.find(v => v.villageCoords === '417|463');
+    if (vila060F) {
+      console.log('=== VILA 060F LIDA ===');
+      console.log('Spear:', vila060F.troops.spear);
+      console.log('Sword:', vila060F.troops.sword);
+      console.log('Heavy:', vila060F.troops.heavy);
+    }
+
     msgInfo('Carregando dados do mundo (tribos/jogadores/vilas)...');
     const { worldVillages, players, allies } = await fetchWorldData();
 
@@ -709,6 +723,13 @@
       if (!shouldIncludeVillage(troops, input.req, input.stackLimitK)) continue;
 
       const missingTroops = calculateMissingTroops(troops, input.req, minD, input.scaleDownK);
+
+      // DEBUG: mostra o cálculo para vila 060F
+      if (v.villageCoords === '417|463') {
+        console.log('=== MISSING TROOPS 060F ===');
+        console.log('Distance:', minD);
+        console.log('Missing:', missingTroops);
+      }
 
       rows.push({
         ...v,
