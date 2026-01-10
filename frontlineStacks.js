@@ -1,7 +1,14 @@
 /* 
- * Frontline Stacks Planner — MEMBER version (BR138-friendly) — FIXED TROOPS PARSER
+ * Frontline Stacks Planner — MEMBER version (BR138-friendly) — SUPPORT-AWARE
  * Adaptado para membro: planeja SOMENTE suas aldeias (lê overview_villages&mode=units)
- * Correção: agora lê SOMENTE o bloco "Na aldeia" (evita pegar Total/Fora e dar falso “stacked”)
+ *
+ * ✅ Agora você pode escolher a FONTE das tropas:
+ *   - "Na aldeia"  -> normalmente só tropas “em casa” (pode variar por mundo)
+ *   - "Total (inclui apoio)" -> soma tudo que está na aldeia (inclui tropas de apoio estacionadas)
+ *
+ * IMPORTANTE:
+ * - O que você pediu (“ver toda tropa de apoio que tiver na vila”) geralmente corresponde ao bloco/cabeçalho "Total".
+ * - Em alguns mundos o “Na aldeia” já inclui apoio; em outros não. Por isso deixei selecionável.
  *
  * Rodar no mapa (screen=map)
  */
@@ -9,6 +16,10 @@
 // User Input
 if (typeof DEBUG !== 'boolean') DEBUG = false;
 if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
+
+// ✅ escolha padrão (você pode sobrescrever antes de colar o script):
+// TROOPS_SCOPE = 'in_village'  ou  'total'
+if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
 
 (function BOOT() {
     const START_TS = Date.now();
@@ -24,25 +35,20 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
     }
 
     function bootFail(msg) {
-        try {
-            if (window.UI && UI.ErrorMessage) UI.ErrorMessage(msg);
-        } catch (_) {}
+        try { if (window.UI && UI.ErrorMessage) UI.ErrorMessage(msg); } catch (_) {}
         console.error(msg);
     }
 
     function bootInfo(msg) {
-        try {
-            if (window.UI && UI.InfoMessage) UI.InfoMessage(msg);
-        } catch (_) {}
+        try { if (window.UI && UI.InfoMessage) UI.InfoMessage(msg); } catch (_) {}
         console.log(msg);
     }
 
     (function waitLoop() {
         if (bootReady()) {
             bootInfo('[Frontline Stacks Planner] iniciado… (boot OK)');
-            try {
-                main();
-            } catch (e) {
+            try { main(); }
+            catch (e) {
                 bootFail('[Frontline Stacks Planner] erro ao iniciar: ' + (e?.message || e));
                 console.error(e);
             }
@@ -50,7 +56,7 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         }
 
         if (Date.now() - START_TS > 10000) {
-            bootFail('[Frontline Stacks Planner] não conseguiu inicializar (jQuery/UI/game_data ausentes). Tente executar novamente na página totalmente carregada.');
+            bootFail('[Frontline Stacks Planner] não conseguiu inicializar (jQuery/UI/game_data ausentes). Execute com a página carregada.');
             return;
         }
 
@@ -58,12 +64,11 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
     })();
 
     async function main() {
-        // Script Config
         var scriptConfig = {
             scriptData: {
                 prefix: 'frontlineStacksPlanner',
                 name: `Frontline Stacks Planner`,
-                version: 'v1.0.3-member-fixed',
+                version: 'v1.0.3-member-support-aware',
                 author: 'RedAlert + member adaptation',
                 authorUrl: 'https://twscripts.dev/',
                 helpLink:
@@ -98,15 +103,17 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
                     'Copied on clipboard!': 'Copied on clipboard!',
                     'Could not read your troops from overview!':
                         'Could not read your troops from overview!',
-                    'Reading troops in-village block...':
-                        'Reading troops in-village block...',
+                    'Reading troops block...':
+                        'Reading troops block...',
+                    'Troops source': 'Troops source',
+                    'In village': 'In village',
+                    'Total (incl. support)': 'Total (incl. support)',
                 },
             },
             allowedScreens: ['map'],
             isDebug: DEBUG,
         };
 
-        // Minimal twSDK (só o necessário)
         const twSDK = {
             scriptData: {},
             translations: {},
@@ -254,8 +261,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         await twSDK.init(scriptConfig);
 
         const scriptInfo = twSDK.scriptInfo();
-
-        // SINAL DE VIDA
         UI.InfoMessage(`${scriptInfo} rodando (screen=${twSDK.getParameterByName('screen') || '???'})`);
 
         if (!twSDK.checkScreen()) {
@@ -265,7 +270,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         }
 
         const hcPopAmount = HC_AMOUNT ?? twSDK.unitsFarmSpace['heavy'];
-
         const DEFAULT_VALUES = { DISTANCE: 5, STACK: 100, SCALE_PER_FIELD: 5 };
 
         // Carrega world data
@@ -282,8 +286,10 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
             return;
         }
 
-        // Puxa suas tropas (FIX: bloco "Na aldeia")
-        const myVillagesData = await fetchMyVillagesTroops();
+        // Lê suas tropas com base na fonte (na aldeia / total)
+        const initialScope = (TROOPS_SCOPE === 'in_village' ? 'in_village' : 'total');
+        const myVillagesData = await fetchMyVillagesTroops(initialScope);
+
         if (!myVillagesData.length) {
             UI.ErrorMessage(`${scriptInfo}: não consegui ler suas tropas em Visão geral > Tropas.`);
             UI.InfoMessage(`Abra: Visão geral → Tropas (overview_villages&mode=units), volte pro mapa e execute de novo.`);
@@ -297,7 +303,8 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         }];
 
         // UI
-        buildUI();
+        buildUI(initialScope);
+        handleTroopsSourceChange(playersData);
         handleCalculateStackPlans(playersData);
         handleBacklineStacks(playersData);
         handleExport();
@@ -308,15 +315,29 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         // UI builders + actions
         // ======================
 
-        function buildUI() {
+        function buildUI(scope) {
             const enemyTribePickerHtml = buildEnemyTribePicker(tribes, 'Tribes');
             const troopAmountsHtml = buildUnitsChooserTable();
+
+            const scopeLabel = twSDK.tt('Troops source');
+            const inVillageLabel = twSDK.tt('In village');
+            const totalLabel = twSDK.tt('Total (incl. support)');
 
             const content = `
                 <div class="ra-mb15">
                     <div class="ra-grid">
                         <div>
                             ${enemyTribePickerHtml}
+                        </div>
+                        <div>
+                            <label for="raTroopsScope" class="ra-label">${scopeLabel}</label>
+                            <select id="raTroopsScope" class="ra-input">
+                                <option value="in_village" ${scope === 'in_village' ? 'selected' : ''}>${inVillageLabel}</option>
+                                <option value="total" ${scope === 'total' ? 'selected' : ''}>${totalLabel}</option>
+                            </select>
+                            <small style="display:block;margin-top:6px;opacity:.85">
+                                Dica: se quiser contar Apoio estacionado, use <b>Total</b>.
+                            </small>
                         </div>
                         <div>
                             <label for="raDistance" class="ra-label">${twSDK.tt('Distance')}</label>
@@ -326,16 +347,20 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
                             <label for="raStack" class="ra-label">${twSDK.tt('Stack Limit')}</label>
                             <input type="number" class="ra-input" id="raStack" value="${DEFAULT_VALUES.STACK}">
                         </div>
-                        <div>
-                            <label for="raScalePerField" class="ra-label">${twSDK.tt('Scale down per field (k)')}</label>
-                            <input type="number" class="ra-input" id="raScalePerField" value="${DEFAULT_VALUES.SCALE_PER_FIELD}">
-                        </div>
                     </div>
                 </div>
 
                 <div class="ra-mb15">
-                    <label class="ra-label">${twSDK.tt('Required Stack Amount')}</label>
-                    ${troopAmountsHtml}
+                    <div class="ra-grid2">
+                        <div>
+                            <label for="raScalePerField" class="ra-label">${twSDK.tt('Scale down per field (k)')}</label>
+                            <input type="number" class="ra-input" id="raScalePerField" value="${DEFAULT_VALUES.SCALE_PER_FIELD}">
+                        </div>
+                        <div>
+                            <label class="ra-label">${twSDK.tt('Required Stack Amount')}</label>
+                            ${troopAmountsHtml}
+                        </div>
+                    </div>
                 </div>
 
                 <div>
@@ -348,12 +373,38 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
             `;
 
             const customStyle = `
-                .ra-grid { display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; grid-gap: 15px; }
+                .ra-grid { display:grid; grid-template-columns: 1.2fr .9fr .8fr .8fr; grid-gap: 15px; align-items: start; }
+                .ra-grid2 { display:grid; grid-template-columns: .7fr 1.3fr; grid-gap: 15px; }
                 .ra-input { width:100% !important; padding:5px; font-size:14px; }
                 .ra-label { margin-bottom:6px; font-weight:600; display:block; }
+                @media(max-width: 900px){
+                    .ra-grid{grid-template-columns:1fr; }
+                    .ra-grid2{grid-template-columns:1fr; }
+                }
             `;
 
             twSDK.renderBoxWidget(content, scriptConfig.scriptData.prefix, 'ra-frontline-stacks', customStyle);
+        }
+
+        function handleTroopsSourceChange(playersData) {
+            jQuery('#raTroopsScope').on('change', async function () {
+                const scope = jQuery(this).val() === 'in_village' ? 'in_village' : 'total';
+                UI.InfoMessage(`${scriptInfo}: recarregando tropas (${scope === 'total' ? 'TOTAL (com apoio)' : 'NA ALDEIA'})…`);
+
+                const refreshed = await fetchMyVillagesTroops(scope);
+                if (!refreshed.length) {
+                    UI.ErrorMessage(`${scriptInfo}: falhou ao reler tropas.`);
+                    return;
+                }
+
+                playersData[0].villagesData = refreshed;
+
+                // limpa tabela anterior
+                jQuery('#raStacks').hide().html('');
+                jQuery('#raExport').attr('data-stack-plans', '');
+
+                UI.SuccessMessage(`${scriptInfo}: tropas atualizadas (${refreshed.length} aldeias). Agora recalcula.`);
+            });
         }
 
         function buildEnemyTribePicker(array, entity) {
@@ -403,7 +454,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
                 return { chosenTribes: [], distance, unitAmounts, stackLimit, scaleDownPerField };
             }
 
-            // permite múltiplas tags separadas por vírgula
             chosenTribes = chosenTribes.split(',').map(s => s.trim()).filter(Boolean);
 
             jQuery('#raUnitSelector input').each(function () {
@@ -494,7 +544,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
             const tribePlayers = getTribeMembersById(chosenTribeIds);
             const enemyCoords = filterVillagesByPlayerIds(tribePlayers);
 
-            // dentro do raio
             let within = [];
             myVillages.forEach((v) => {
                 enemyCoords.forEach((ec) => {
@@ -503,7 +552,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
                 });
             });
 
-            // precisa stack?
             const realLimit = stackLimit * 1000;
             let need = [];
             within.forEach((v) => {
@@ -517,7 +565,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
                 if (should) need.push({ ...v, pop });
             });
 
-            // unique por villageId
             const uniq = {};
             need.sort((a,b)=>a.fieldsAway-b.fieldsAway).forEach(it => { if (!uniq[it.villageId]) uniq[it.villageId] = it; });
             return Object.values(uniq);
@@ -625,7 +672,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
                     </div>
                 `;
 
-                // popup simples sem draggable (evita erro em mundos/clients sem jQueryUI)
                 const id = 'raFrontlineStacks-popup';
                 jQuery('#' + id).remove();
                 jQuery('body').append(`
@@ -670,13 +716,14 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
         }
 
         // ======================
-        // DATA: suas tropas (FIXED)
+        // DATA: suas tropas (SUPPORT-AWARE)
         // ======================
-        async function fetchMyVillagesTroops() {
+        async function fetchMyVillagesTroops(scope) {
             let url = `/game.php?screen=overview_villages&mode=units&village=${game_data.village.id}`;
             if (game_data.player.sitter != '0') url += `&t=${game_data.player.id}`;
 
-            UI.InfoMessage(`${scriptInfo}: ${twSDK.tt('Reading troops in-village block...')}`);
+            const scopeLabel = (scope === 'total') ? 'TOTAL (inclui apoio)' : 'NA ALDEIA';
+            UI.InfoMessage(`${scriptInfo}: ${twSDK.tt('Reading troops block...')} ${scopeLabel}`);
 
             try {
                 const html = await jQuery.get(url);
@@ -690,12 +737,9 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
                         if (!$table.length && $t.find('img[src*="/graphic/unit/unit_"]').length) $table = $t;
                     });
                 }
-                if (!$table.length) {
-                    console.error(scriptInfo, 'Não achei tabela de tropas no overview.');
-                    return [];
-                }
+                if (!$table.length) return [];
 
-                // 2) Detecta bloco "Na aldeia"/"In village" pelos headers com colspan
+                // 2) Descobre o RANGE de colunas do grupo desejado (Na aldeia vs Total)
                 const $theadRows = $table.find('thead tr');
                 const $groupRow = $theadRows.eq(0);
                 const $iconRow  = $theadRows.length > 1 ? $theadRows.eq(1) : $theadRows.eq(0);
@@ -716,16 +760,25 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
                         const start = colCursor;
                         const end = colCursor + colspan - 1;
 
-                        if (IN_VILLAGE_RE.test(text) && !OUTSIDE_RE.test(text) && !TOTAL_RE.test(text)) {
-                            targetRange = { start, end };
+                        const isInVillage = IN_VILLAGE_RE.test(text) && !OUTSIDE_RE.test(text) && !TOTAL_RE.test(text);
+                        const isTotal = TOTAL_RE.test(text);
+
+                        if (scope === 'total') {
+                            if (isTotal) targetRange = { start, end };
+                        } else {
+                            if (isInVillage) targetRange = { start, end };
                         }
 
                         colCursor += colspan;
                     });
                 }
 
-                // 3) Mapeia unit -> índice de coluna (apenas dentro do range)
+                // 3) unit -> índice de coluna
+                //    Se não achou range (mundo diferente), usa fallback:
+                //    - scope=total: pega a ÚLTIMA ocorrência do ícone (geralmente Total)
+                //    - scope=in_village: pega a PRIMEIRA ocorrência (geralmente Na aldeia)
                 const unitColIndex = {};
+                const unitColIndexLast = {};
                 const $ths = $iconRow.find('th');
 
                 $ths.each(function (i) {
@@ -740,16 +793,19 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
 
                     const unit = m[1];
 
-                    if (unitColIndex[unit] === undefined) {
-                        unitColIndex[unit] = i;
-                    }
+                    if (unitColIndex[unit] === undefined) unitColIndex[unit] = i;
+                    unitColIndexLast[unit] = i;
                 });
 
-                const unitsInTable = game_data.units.filter(u => unitColIndex[u] !== undefined);
-                if (!unitsInTable.length) {
-                    console.error(scriptInfo, 'Não encontrei colunas de unidades dentro do bloco "Na aldeia".');
-                    return [];
+                // fallback sem range: força primeira/última
+                if (!targetRange) {
+                    Object.keys(unitColIndexLast).forEach((u) => {
+                        unitColIndex[u] = (scope === 'total') ? unitColIndexLast[u] : unitColIndex[u];
+                    });
                 }
+
+                const unitsInTable = game_data.units.filter(u => unitColIndex[u] !== undefined);
+                if (!unitsInTable.length) return [];
 
                 // 4) Lê linhas -> aldeias
                 const out = [];
@@ -785,12 +841,6 @@ if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
 
                     out.push({ villageId, villageName: name, villageCoords: coords, troops });
                 });
-
-                if (!out.length) {
-                    UI.ErrorMessage(`${scriptInfo}: ${twSDK.tt('Could not read your troops from overview!')}`);
-                } else {
-                    UI.SuccessMessage(`${scriptInfo}: tropas lidas no bloco "Na aldeia" (${out.length} aldeias).`);
-                }
 
                 return out;
             } catch (e) {
