@@ -3,7 +3,7 @@
 
   const SCRIPT = {
     name: 'Frontline Stacks Planner',
-    version: 'member-ui (fix offset columns + fix tag NFKC)',
+    version: 'member-ui (fix colspan rows + fix tag collision BO vs -B.O-)',
     prefix: 'ra_frontline_member',
   };
 
@@ -219,15 +219,16 @@
     localStorage.setItem(LS_KEY, JSON.stringify(tags || []));
   }
 
-  // ✅ FIX 1: normalização forte de TAG (NFKC + remove zero-width)
+  // ✅ FIX (BO): não colidir "BO" com "-B.O-" — preserva '-' e '.'
   function normalizeTag(t) {
     return String(t || '')
       .replace(/^\uFEFF/, '')
-      .normalize('NFKC')                    // converte fullwidth etc
-      .replace(/[\u200B-\u200D\uFEFF]/g, '')// zero-width
+      .normalize('NFKC')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '') // zero-width
+      .trim()
       .toUpperCase()
-      .replace(/[\[\]\s]/g, '')
-      .replace(/[^A-Z0-9]/g, '');
+      .replace(/[\[\]\s]/g, '')              // remove só colchetes e espaços
+      .replace(/[^A-Z0-9.\-]/g, '');         // mantém '.' e '-' (não cola BO com -B.O-)
   }
 
   let selectedTags = loadSelectedTags();
@@ -319,19 +320,37 @@
     return null;
   }
 
-  // ✅ FIX 2: realinha por offset (se header tem X col e linha tem Y col, ajusta)
-  function readTroopsFromNaAldeiaRow($r, unitColMap, headerLen) {
-    const troops = {};
-    const cells = $r.children('td,th');
-    const rowLen = cells.length;
+  // ✅ FIX (colspan): cria "colunas virtuais" para cada célula (respeitando colspan)
+  function getVirtualCells($row) {
+    const out = [];
+    let col = 0;
+    const $cells = $row.children('td,th');
+    $cells.each(function () {
+      const $c = $(this);
+      const span = Math.max(1, parseInt($c.attr('colspan') || '1', 10) || 1);
+      out.push({ $c, start: col, span });
+      col += span;
+    });
+    return out;
+  }
 
-    // offset positivo/negativo corrige "pulo de coluna"
-    const offset = rowLen - headerLen;
+  function textAtVirtualIndex(virtualCells, idx) {
+    for (const it of virtualCells) {
+      if (idx >= it.start && idx < it.start + it.span) {
+        return it.$c.text();
+      }
+    }
+    return '';
+  }
+
+  // ✅ FIX (colspan): lê tropas usando o índice do header, mas na linha com colspan
+  function readTroopsFromNaAldeiaRow($r, unitColMap) {
+    const troops = {};
+    const vc = getVirtualCells($r);
 
     for (const [unit, colIdx] of Object.entries(unitColMap)) {
-      const realIdx = colIdx + offset;
-      if (realIdx < 0 || realIdx >= rowLen) continue;
-      troops[unit] = cleanInt(cells.eq(realIdx).text());
+      const raw = textAtVirtualIndex(vc, colIdx);
+      troops[unit] = cleanInt(raw);
     }
     return troops;
   }
@@ -350,7 +369,6 @@
     if (!$hdr) throw new Error('Não achei o cabeçalho de unidades.');
 
     const unitColMap = headerUnitColumnMap($hdr);
-    const headerLen = $hdr.children('th,td').length;
 
     // mínimo necessário
     const must = ['spear', 'sword', 'heavy'];
@@ -368,7 +386,7 @@
       const vh = findVillageHeaderAbove(rows, i);
       if (!vh) continue;
 
-      const troops = readTroopsFromNaAldeiaRow($r, unitColMap, headerLen);
+      const troops = readTroopsFromNaAldeiaRow($r, unitColMap);
 
       const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
       villagesByKey.set(key, {
