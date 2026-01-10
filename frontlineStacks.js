@@ -3,7 +3,7 @@
 
   const SCRIPT = {
     name: 'Frontline Stacks Planner',
-    version: 'member-ui-multitribe + header-column-mapping + robust-allytag',
+    version: 'member-ui (fix offset columns + fix tag NFKC)',
     prefix: 'ra_frontline_member',
   };
 
@@ -28,7 +28,7 @@
     distance: 5,
     stackLimitK: 100,
     scaleDownPerFieldK: 5,
-    req: { spear: 15000, sword: 15000, heavy: 500, spy: 0 }, // heavy = Cavalaria pesada (HC)
+    req: { spear: 15000, sword: 15000, heavy: 500, spy: 0 }, // heavy = Cavalaria pesada
   };
 
   function msgInfo(t) { (window.UI && UI.InfoMessage) ? UI.InfoMessage(t) : console.log(t); }
@@ -61,15 +61,11 @@
   // ========= CSV tolerant =========
   function parseCSV(text) {
     if (text == null) return [];
-    // remove BOM + normalize lines
     text = String(text).replace(/^\uFEFF/, '').replace(/\r/g, '').trim();
     if (!text) return [];
     const lines = text.split('\n');
-
-    // detect delimiter: comma vs semicolon
     const sample = lines[0] || '';
     const delim = (sample.split(',').length >= sample.split(';').length) ? ',' : ';';
-
     return lines.map((l) => l.split(delim).map(v => (v ?? '').trim()));
   }
 
@@ -103,7 +99,6 @@
     #${SCRIPT.prefix} .small{ font-size:12px; opacity:.9; }
     @media (max-width: 900px){ #${SCRIPT.prefix} .grid4{ grid-template-columns:1fr; } #${SCRIPT.prefix} .gridReq{ grid-template-columns:1fr 1fr; } }
 
-    /* Modal */
     #${SCRIPT.prefix}_modalMask{ position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:99998; display:none; }
     #${SCRIPT.prefix}_modal{ position:fixed; left:50%; top:10%; transform:translateX(-50%); width:min(820px, 92vw); max-height:78vh; overflow:auto;
       background:#f4e4bc; border:2px solid #603000; z-index:99999; display:none; }
@@ -224,16 +219,18 @@
     localStorage.setItem(LS_KEY, JSON.stringify(tags || []));
   }
 
-  // ✅ normalização forte (resolve [BO], BO , B.O, etc)
+  // ✅ FIX 1: normalização forte de TAG (NFKC + remove zero-width)
   function normalizeTag(t) {
     return String(t || '')
       .replace(/^\uFEFF/, '')
+      .normalize('NFKC')                    // converte fullwidth etc
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')// zero-width
       .toUpperCase()
       .replace(/[\[\]\s]/g, '')
-      .replace(/[^A-Z0-9]/g, ''); // só A-Z0-9
+      .replace(/[^A-Z0-9]/g, '');
   }
 
-  let selectedTags = loadSelectedTags(); // array de tags normalizadas
+  let selectedTags = loadSelectedTags();
 
   function updateSelectedTagsUI() {
     const text = selectedTags.length ? selectedTags.map(t => `[${t}]`).join(', ') : '(nenhuma)';
@@ -241,7 +238,7 @@
     $('#raTribesPill').text(`tribos: ${selectedTags.length ? selectedTags.join(', ') : '(nenhuma)'}`);
   }
 
-  // ========= Overview reader (coluna por HEADER INDEX) =========
+  // ========= Overview reader =========
   function pickUnitsTableFromHTML(doc) {
     const $tables = $(doc).find('table.vis');
     if (!$tables.length) return null;
@@ -266,26 +263,24 @@
     return null;
   }
 
-  // ✅ monta mapa unit->colIndex pelo header
   function headerUnitColumnMap($headerRow) {
     const map = {};
     const cells = $headerRow.children('th,td');
-
     cells.each(function (idx) {
       const $img = $(this).find('img[src*="/graphic/unit/unit_"]').first();
       if (!$img.length) return;
       const src = $img.attr('src') || '';
       const m = src.match(/unit_([a-z_]+)\.(png|webp)/i);
-      if (m) {
-        const unit = m[1];
-        map[unit] = idx; // índice da célula
-      }
+      if (m) map[m[1]] = idx;
     });
     return map;
   }
 
   function isNaAldeiaRow($r) {
-    const first = ($r.children('td,th').first().text() || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const first = ($r.children('td,th').first().text() || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
     if (first === 'na aldeia') return true;
     return $r.text().toLowerCase().includes('na aldeia');
   }
@@ -324,14 +319,19 @@
     return null;
   }
 
-  // ✅ lê as tropas usando o índice exato do header (NUNCA soma 10k errado)
-  function readTroopsFromNaAldeiaRow_BY_HEADER_COLS($r, unitColMap) {
+  // ✅ FIX 2: realinha por offset (se header tem X col e linha tem Y col, ajusta)
+  function readTroopsFromNaAldeiaRow($r, unitColMap, headerLen) {
     const troops = {};
     const cells = $r.children('td,th');
+    const rowLen = cells.length;
+
+    // offset positivo/negativo corrige "pulo de coluna"
+    const offset = rowLen - headerLen;
 
     for (const [unit, colIdx] of Object.entries(unitColMap)) {
-      const $cell = cells.eq(colIdx);
-      troops[unit] = cleanInt($cell.text());
+      const realIdx = colIdx + offset;
+      if (realIdx < 0 || realIdx >= rowLen) continue;
+      troops[unit] = cleanInt(cells.eq(realIdx).text());
     }
     return troops;
   }
@@ -350,9 +350,9 @@
     if (!$hdr) throw new Error('Não achei o cabeçalho de unidades.');
 
     const unitColMap = headerUnitColumnMap($hdr);
-    if (!Object.keys(unitColMap).length) throw new Error('Cabeçalho sem unidades.');
+    const headerLen = $hdr.children('th,td').length;
 
-    // check mínimo (importante pro seu caso)
+    // mínimo necessário
     const must = ['spear', 'sword', 'heavy'];
     for (const u of must) {
       if (!(u in unitColMap)) throw new Error(`Cabeçalho não contém ${u}.`);
@@ -368,7 +368,7 @@
       const vh = findVillageHeaderAbove(rows, i);
       if (!vh) continue;
 
-      const troops = readTroopsFromNaAldeiaRow_BY_HEADER_COLS($r, unitColMap);
+      const troops = readTroopsFromNaAldeiaRow($r, unitColMap, headerLen);
 
       const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
       villagesByKey.set(key, {
@@ -436,7 +436,6 @@
       const need = Number(needRaw) || 0;
       if (need <= 0) continue;
 
-      // spy e heavy normalmente não escalam (padrão do script original)
       const nonScaling = (unit === 'spy' || unit === 'heavy');
       const effectiveNeed = nonScaling ? need : Math.max(0, need - scale);
 
@@ -568,10 +567,11 @@
     for (const a of cachedAllies) {
       const id = a[0];
       const name = a[1] || '';
-      const tag = normalizeTag(a[2] || '');
+      const tagRaw = a[2] || '';
+      const tag = normalizeTag(tagRaw);
       if (!id || !tag) continue;
 
-      const hay = (tag + ' ' + name).toLowerCase();
+      const hay = (`${tag} ${name} ${tagRaw}`).toLowerCase();
       if (q && !hay.includes(q)) continue;
 
       const checked = selectedTags.includes(tag) ? 'checked' : '';
