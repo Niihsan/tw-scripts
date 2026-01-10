@@ -1186,90 +1186,130 @@ window.twSDK = {
         let url = `/game.php?screen=overview_villages&mode=units&village=${game_data.village.id}`;
         if (game_data.player.sitter != '0') url += `&t=${game_data.player.id}`;
 
+        // ---- helpers (local) ----
+        const cleanInt = (x) => {
+            const m = String(x ?? '').replace(/[^\d]/g, '');
+            return m ? parseInt(m, 10) : 0;
+        };
+
+        const coordsRegex = /\b\d{1,3}\|\d{1,3}\b/;
+
+        const pickUnitsTable = ($root) => {
+            let $table = $root.find('table#units_table').first();
+            if ($table.length) return $table;
+
+            // fallback: best "vis" table with unit icons
+            let best = null;
+            let bestScore = -1;
+            $root.find('table.vis').each(function () {
+                const $t = jQuery(this);
+                const iconCount = $t.find('img[src*="/graphic/unit/unit_"]').length;
+                const rows = $t.find('tr').length;
+                const score = iconCount * 10 + rows;
+                if (score > bestScore && iconCount >= 8) {
+                    best = $t;
+                    bestScore = score;
+                }
+            });
+            return best ? best : jQuery();
+        };
+
+        const isNaAldeiaRow = ($tr) => {
+            const first = ($tr.children('td,th').first().text() || '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLowerCase();
+            if (first === 'na aldeia') return true;
+            // fallback: sometimes label isn't strictly first cell
+            return $tr.text().toLowerCase().includes('na aldeia');
+        };
+
+        const extractVillageIdFromRow = ($tr) => {
+            const hrefs = $tr.find('a[href*="village="], a[href*="info_village"]').toArray().map(a => jQuery(a).attr('href') || '');
+            for (const href of hrefs) {
+                const m1 = href.match(/[?&]village=(\d+)/);
+                if (m1) return parseInt(m1[1], 10);
+                const m2 = href.match(/[?&]id=(\d+)/);
+                if (m2) return parseInt(m2[1], 10);
+            }
+            return 0;
+        };
+
+        const findVillageHeaderAbove = (rows, idx) => {
+            for (let j = idx; j >= 0 && j >= idx - 12; j--) {
+                const $r = rows[j];
+                const text = $r.text().replace(/\s+/g, ' ').trim();
+                const cm = text.match(coordsRegex);
+                if (!cm) continue;
+
+                const coords = cm[0];
+                const vid = extractVillageIdFromRow($r);
+
+                let name = '';
+                const $bestLink = $r.find('a').filter((_, a) => {
+                    const h = jQuery(a).attr('href') || '';
+                    return h.includes('village=') || h.includes('info_village') || h.includes('id=');
+                }).first();
+                if ($bestLink.length) name = ($bestLink.text() || '').trim();
+                if (!name) {
+                    name = text.split(coords)[0].trim();
+                    if (!name) name = `Village ${coords}`;
+                }
+                return { id: vid || 0, name, coords };
+            }
+            return null;
+        };
+
+        // ✅ FIX: read troops from "Na aldeia" row by tail-slice (never “pula coluna”)
+        const readTroopsFromNaAldeiaRow_TAILSLICE = ($tr) => {
+            const troops = {};
+            const worldUnits = Array.isArray(game_data.units) ? game_data.units.slice() : [];
+            const $tds = $tr.children('td');
+            if (!$tds.length || !worldUnits.length) return troops;
+
+            const N = worldUnits.length;
+            const start = Math.max(0, $tds.length - N);
+
+            for (let i = 0; i < N; i++) {
+                const unit = worldUnits[i];
+                troops[unit] = cleanInt($tds.eq(start + i).text());
+            }
+            return troops;
+        };
+
         try {
             const html = await jQuery.get(url);
             const doc = jQuery.parseHTML(html);
+            const $root = jQuery('<div>').append(doc);
 
-            // Try common table IDs/selectors
-            let $table = jQuery(doc).find('table#units_table').first();
-
-            if (!$table.length) {
-                // fallback: a .vis table containing unit icons
-                jQuery(doc).find('table.vis').each(function () {
-                    const $t = jQuery(this);
-                    if (!$table.length && $t.find('img[src*="/graphic/unit/unit_"]').length) {
-                        $table = $t;
-                    }
-                });
-            }
-
+            const $table = pickUnitsTable($root);
             if (!$table.length) {
                 console.error(`${scriptInfo} Could not find units table.`);
                 return [];
             }
 
-            // Map unit -> column index via header icons
-            const unitColIndex = {};
-            const $ths = $table.find('thead tr').first().find('th');
+            const rows = $table.find('tr').toArray().map(r => jQuery(r));
+            const byKey = {}; // unique by villageId if possible, else by coords
 
-            $ths.each(function (i) {
-                const $img = jQuery(this).find('img[src*="/graphic/unit/unit_"]');
-                if ($img.length) {
-                    const src = $img.attr('src') || '';
-                    const m = src.match(/unit_([a-z0-9_]+)\./i);
-                    if (m && m[1]) unitColIndex[m[1]] = i;
-                }
-            });
+            for (let i = 0; i < rows.length; i++) {
+                const $tr = rows[i];
+                if (!isNaAldeiaRow($tr)) continue;
 
-            const worldUnits = game_data.units.slice();
-            const unitsInTable = worldUnits.filter(u => unitColIndex[u] !== undefined);
+                const vh = findVillageHeaderAbove(rows, i);
+                if (!vh || !vh.coords) continue;
 
-            if (!unitsInTable.length) {
-                console.error(`${scriptInfo} No recognized unit columns found.`, unitColIndex);
-                return [];
+                const troops = readTroopsFromNaAldeiaRow_TAILSLICE($tr);
+
+                const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
+                byKey[key] = {
+                    villageId: vh.id || 0,
+                    villageName: vh.name,
+                    villageCoords: vh.coords,
+                    troops,
+                };
             }
 
-            const villagesData = [];
-
-            $table.find('tbody tr').each(function () {
-                const $tr = jQuery(this);
-                const $tds = $tr.find('td');
-                if ($tds.length < 2) return;
-
-                // Village link usually first column
-                const $a = $tr.find('td').first().find('a').first();
-                if (!$a.length) return;
-
-                const href = $a.attr('href') || '';
-                let villageId = parseInt(twSDK.getParameterByName('id', window.location.origin + href), 10);
-                if (!Number.isFinite(villageId)) {
-                    const v2 = parseInt(twSDK.getParameterByName('village', window.location.origin + href), 10);
-                    if (Number.isFinite(v2)) villageId = v2;
-                }
-                if (!Number.isFinite(villageId)) return;
-
-                const rowText = $tr.text();
-                const coords = (rowText.match(twSDK.coordsRegex) || [null])[0];
-                if (!coords) return;
-
-                const name = $a.text().trim() || `Village ${coords}`;
-
-                const troops = {};
-                unitsInTable.forEach((unit) => {
-                    const idx = unitColIndex[unit];
-                    const raw = jQuery($tds.get(idx)).text().trim();
-                    const n = parseInt((raw || '0').replace(/[^\d]/g, ''), 10);
-                    troops[unit] = Number.isFinite(n) ? n : 0;
-                });
-
-                villagesData.push({
-                    villageId,
-                    villageName: name,
-                    villageCoords: coords,
-                    troops,
-                });
-            });
-
+            const villagesData = Object.values(byKey);
             return villagesData;
         } catch (e) {
             console.error(`${scriptInfo} Error fetching my villages troops:`, e);
