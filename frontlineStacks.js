@@ -299,43 +299,49 @@
     return null;
   }
 
-  // ✅ NOVA FUNÇÃO CORRIGIDA: detecta header com ícones de unidades e usa como referência
+  // ✅ FIX DEFINITIVO: mapeia unidades do header e ajusta offset da linha "Na aldeia"
   function readTroopsFromNaAldeiaRow($r, $table) {
     const troops = {};
     const units = (game_data && Array.isArray(game_data.units) && game_data.units.length)
       ? game_data.units.slice()
       : ['spear','sword','axe','archer','spy','light','marcher','heavy','ram','catapult','knight','snob'];
 
-    // Procura a linha de header com ícones de unidades (normalmente logo acima)
+    // Procura a linha de header com ícones de unidades
     const $headerRow = $table.find('tr').filter(function() {
       return $(this).find('img[src*="/graphic/unit/unit_"]').length >= 8;
     }).first();
 
     if (!$headerRow.length) {
-      console.warn('Header com ícones de unidades não encontrado, usando método fallback');
+      console.warn('Header não encontrado, usando fallback');
       return readTroopsFromNaAldeiaRow_FALLBACK($r, units);
     }
 
-    // Mapeia cada unidade para sua posição de coluna baseada no header
+    // Mapeia cada unidade para sua coluna no HEADER
     const unitColumnMap = {};
     $headerRow.find('th, td').each(function(colIdx) {
-      const $cell = $(this);
-      const $img = $cell.find('img[src*="/graphic/unit/unit_"]');
+      const $img = $(this).find('img[src*="/graphic/unit/unit_"]');
       if ($img.length) {
         const src = $img.attr('src') || '';
-        const match = src.match(/unit_(\w+)\.png/);
+        // Aceita tanto .png quanto .webp
+        const match = src.match(/unit_(\w+)\.(png|webp)/);
         if (match) {
           unitColumnMap[match[1]] = colIdx;
         }
       }
     });
 
-    // Lê os valores da linha "Na aldeia" usando o mapa de colunas
+    // A linha "Na aldeia" tem offset de -1 em relação ao header
+    // Header: [Aldeia][vazio][spear][sword]...
+    // Na aldeia: [Na Aldeia][pop][spear][sword]...
+    // Então spear no header está em col 2, mas na linha "Na aldeia" também está em col 2
+    
     const $cells = $r.children('td');
+    
     for (const unit of units) {
-      const colIdx = unitColumnMap[unit];
-      if (colIdx !== undefined && colIdx < $cells.length) {
-        const txt = $cells.eq(colIdx).text();
+      const headerCol = unitColumnMap[unit];
+      if (headerCol !== undefined) {
+        // Usa a mesma coluna (não precisa ajustar offset porque coincide)
+        const txt = $cells.eq(headerCol).text();
         troops[unit] = cleanInt(txt);
       } else {
         troops[unit] = 0;
@@ -345,13 +351,14 @@
     return troops;
   }
 
-  // Método fallback caso não ache header com ícones
+  // Método fallback: pula "Na Aldeia" (col 0) e população (col 1), lê a partir da col 2
   function readTroopsFromNaAldeiaRow_FALLBACK($r, units) {
     const troops = {};
     const $cells = $r.children('td');
     
-    // Pula primeira coluna ("Na aldeia" texto) e lê as próximas N colunas
-    const startCol = 1;
+    // Estrutura: [Na Aldeia][população][spear][sword][axe][spy][light][heavy][ram][catapult][knight][snob][milicia][ação]
+    const startCol = 2; // pula "Na Aldeia" e população
+    
     for (let i = 0; i < units.length; i++) {
       const colIdx = startCol + i;
       const unit = units[i];
