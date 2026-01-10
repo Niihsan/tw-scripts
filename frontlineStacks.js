@@ -1,24 +1,19 @@
 /* 
- * Frontline Stacks Planner — MEMBER version (BR138-friendly) — SUPPORT-AWARE
- * Adaptado para membro: planeja SOMENTE suas aldeias (lê overview_villages&mode=units)
+ * Frontline Stacks Planner — MEMBER version (BR138-friendly) — SUPPORT-AWARE v2
+ * Agora busca explicitamente "type=home" (in village), "type=all" (inclui apoio)
+ * e "type=support" (somente apoio), quando o mundo suportar.
  *
- * ✅ Agora você pode escolher a FONTE das tropas:
- *   - "Na aldeia"  -> normalmente só tropas “em casa” (pode variar por mundo)
- *   - "Total (inclui apoio)" -> soma tudo que está na aldeia (inclui tropas de apoio estacionadas)
- *
- * IMPORTANTE:
- * - O que você pediu (“ver toda tropa de apoio que tiver na vila”) geralmente corresponde ao bloco/cabeçalho "Total".
- * - Em alguns mundos o “Na aldeia” já inclui apoio; em outros não. Por isso deixei selecionável.
- *
- * Rodar no mapa (screen=map)
+ * Como usar:
+ * - Rodar no mapa (screen=map)
+ * - Se ainda ficar igual, abra "Visão geral > Tropas" e selecione a aba "Todos" (All)
+ *   e rode o script novamente (alguns mundos só carregam certas abas depois de você abrir).
  */
 
 // User Input
 if (typeof DEBUG !== 'boolean') DEBUG = false;
 if (typeof HC_AMOUNT === 'undefined') HC_AMOUNT = null;
 
-// ✅ escolha padrão (você pode sobrescrever antes de colar o script):
-// TROOPS_SCOPE = 'in_village'  ou  'total'
+// TROOPS_SCOPE = 'in_village' | 'total' | 'support'
 if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
 
 (function BOOT() {
@@ -68,16 +63,11 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
             scriptData: {
                 prefix: 'frontlineStacksPlanner',
                 name: `Frontline Stacks Planner`,
-                version: 'v1.0.3-member-support-aware',
-                author: 'RedAlert + member adaptation',
-                authorUrl: 'https://twscripts.dev/',
-                helpLink:
-                    'https://forum.tribalwars.net/index.php?threads/frontline-stacks-planner.291478/',
+                version: 'v1.0.3-member-support-aware-v2',
             },
             translations: {
                 en_DK: {
                     'Frontline Stacks Planner': 'Frontline Stacks Planner',
-                    Help: 'Help',
                     'There was an error!': 'There was an error!',
                     'Redirecting...': 'Redirecting...',
                     'Start typing and suggestions will show ...':
@@ -103,11 +93,13 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
                     'Copied on clipboard!': 'Copied on clipboard!',
                     'Could not read your troops from overview!':
                         'Could not read your troops from overview!',
-                    'Reading troops block...':
-                        'Reading troops block...',
                     'Troops source': 'Troops source',
                     'In village': 'In village',
                     'Total (incl. support)': 'Total (incl. support)',
+                    'Support only': 'Support only',
+                    'Reading troops...': 'Reading troops...',
+                    'This world does not expose support on this overview.':
+                        'This world does not expose support on this overview.',
                 },
             },
             allowedScreens: ['map'],
@@ -261,7 +253,7 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
         await twSDK.init(scriptConfig);
 
         const scriptInfo = twSDK.scriptInfo();
-        UI.InfoMessage(`${scriptInfo} rodando (screen=${twSDK.getParameterByName('screen') || '???'})`);
+        UI.InfoMessage(`${scriptInfo} rodando…`);
 
         if (!twSDK.checkScreen()) {
             UI.InfoMessage(twSDK.tt('Redirecting...'));
@@ -272,7 +264,6 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
         const hcPopAmount = HC_AMOUNT ?? twSDK.unitsFarmSpace['heavy'];
         const DEFAULT_VALUES = { DISTANCE: 5, STACK: 100, SCALE_PER_FIELD: 5 };
 
-        // Carrega world data
         let villages = [], players = [], tribes = [];
         try {
             [villages, players, tribes] = await Promise.all([
@@ -286,13 +277,12 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
             return;
         }
 
-        // Lê suas tropas com base na fonte (na aldeia / total)
-        const initialScope = (TROOPS_SCOPE === 'in_village' ? 'in_village' : 'total');
+        const initialScope = normalizeScope(TROOPS_SCOPE);
         const myVillagesData = await fetchMyVillagesTroops(initialScope);
 
         if (!myVillagesData.length) {
             UI.ErrorMessage(`${scriptInfo}: não consegui ler suas tropas em Visão geral > Tropas.`);
-            UI.InfoMessage(`Abra: Visão geral → Tropas (overview_villages&mode=units), volte pro mapa e execute de novo.`);
+            UI.InfoMessage(`Abra: Visão geral → Tropas, selecione "Todos" (All) e rode de novo.`);
             return;
         }
 
@@ -302,17 +292,15 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
             villagesData: myVillagesData
         }];
 
-        // UI
         buildUI(initialScope);
         handleTroopsSourceChange(playersData);
         handleCalculateStackPlans(playersData);
-        handleBacklineStacks(playersData);
         handleExport();
 
         UI.SuccessMessage(`${scriptInfo}: pronto! (aldeias lidas: ${myVillagesData.length})`);
 
         // ======================
-        // UI builders + actions
+        // UI
         // ======================
 
         function buildUI(scope) {
@@ -322,27 +310,30 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
             const scopeLabel = twSDK.tt('Troops source');
             const inVillageLabel = twSDK.tt('In village');
             const totalLabel = twSDK.tt('Total (incl. support)');
+            const supportLabel = twSDK.tt('Support only');
 
             const content = `
                 <div class="ra-mb15">
                     <div class="ra-grid">
-                        <div>
-                            ${enemyTribePickerHtml}
-                        </div>
+                        <div>${enemyTribePickerHtml}</div>
+
                         <div>
                             <label for="raTroopsScope" class="ra-label">${scopeLabel}</label>
                             <select id="raTroopsScope" class="ra-input">
                                 <option value="in_village" ${scope === 'in_village' ? 'selected' : ''}>${inVillageLabel}</option>
                                 <option value="total" ${scope === 'total' ? 'selected' : ''}>${totalLabel}</option>
+                                <option value="support" ${scope === 'support' ? 'selected' : ''}>${supportLabel}</option>
                             </select>
                             <small style="display:block;margin-top:6px;opacity:.85">
-                                Dica: se quiser contar Apoio estacionado, use <b>Total</b>.
+                                Se "Total" ficar igual ao "In village", o mundo pode não expor apoio nessa aba.
                             </small>
                         </div>
+
                         <div>
                             <label for="raDistance" class="ra-label">${twSDK.tt('Distance')}</label>
                             <input type="number" class="ra-input" id="raDistance" value="${DEFAULT_VALUES.DISTANCE}">
                         </div>
+
                         <div>
                             <label for="raStack" class="ra-label">${twSDK.tt('Stack Limit')}</label>
                             <input type="number" class="ra-input" id="raStack" value="${DEFAULT_VALUES.STACK}">
@@ -365,7 +356,6 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
 
                 <div>
                     <a href="javascript:void(0);" id="raPlanStacks" class="btn">${twSDK.tt('Calculate Stacks')}</a>
-                    <a href="javascript:void(0);" id="raBacklineStacks" class="btn">${twSDK.tt('Find Backline Stacks')}</a>
                     <a href="javascript:void(0);" id="raExport" class="btn" data-stack-plans="">${twSDK.tt('Export')}</a>
                 </div>
 
@@ -388,22 +378,19 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
 
         function handleTroopsSourceChange(playersData) {
             jQuery('#raTroopsScope').on('change', async function () {
-                const scope = jQuery(this).val() === 'in_village' ? 'in_village' : 'total';
-                UI.InfoMessage(`${scriptInfo}: recarregando tropas (${scope === 'total' ? 'TOTAL (com apoio)' : 'NA ALDEIA'})…`);
+                const scope = normalizeScope(jQuery(this).val());
+                UI.InfoMessage(`${scriptInfo}: ${twSDK.tt('Reading troops...')} (${scope})`);
 
                 const refreshed = await fetchMyVillagesTroops(scope);
                 if (!refreshed.length) {
-                    UI.ErrorMessage(`${scriptInfo}: falhou ao reler tropas.`);
+                    UI.ErrorMessage(`${scriptInfo}: falhou ao reler tropas (${scope}).`);
                     return;
                 }
 
                 playersData[0].villagesData = refreshed;
-
-                // limpa tabela anterior
                 jQuery('#raStacks').hide().html('');
                 jQuery('#raExport').attr('data-stack-plans', '');
-
-                UI.SuccessMessage(`${scriptInfo}: tropas atualizadas (${refreshed.length} aldeias). Agora recalcula.`);
+                UI.SuccessMessage(`${scriptInfo}: tropas atualizadas (${refreshed.length} aldeias).`);
             });
         }
 
@@ -415,8 +402,7 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
 
             array.forEach((item) => {
                 if (item[0].length !== 0) {
-                    const tag = item[2];
-                    dropdown += `<option value="${twSDK.cleanString(tag)}">`;
+                    dropdown += `<option value="${twSDK.cleanString(item[2])}">`;
                 }
             });
 
@@ -441,6 +427,10 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
                 </table>
             `;
         }
+
+        // ======================
+        // CORE: stack calc
+        // ======================
 
         function collectUserInput() {
             let chosenTribes = (jQuery('#raTribes').val() || '').trim();
@@ -494,7 +484,7 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
             for (let [key, value] of Object.entries(units || {})) {
                 const amount = Number(value || 0);
                 if (!amount) continue;
-                const pop = key !== 'heavy' ? (twSDK.unitsFarmSpace[key] || 1) : hcPopAmount;
+                const pop = key !== 'heavy' ? (twSDK.unitsFarmSpace[key] || 1) : (HC_AMOUNT ?? twSDK.unitsFarmSpace['heavy']);
                 total += pop * amount;
             }
             return total;
@@ -625,68 +615,6 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
             });
         }
 
-        function handleBacklineStacks(playersData) {
-            jQuery('#raBacklineStacks').on('click', function (e) {
-                e.preventDefault();
-
-                const { chosenTribes, distance } = collectUserInput();
-                if (!chosenTribes.length) return;
-
-                const myVillages = playersData.map(p => p.villagesData).flat();
-
-                const chosenTribeIds = getEntityIdsByArrayIndex(chosenTribes, tribes, 2);
-                const tribePlayers = getTribeMembersById(chosenTribeIds);
-                const enemyCoords = filterVillagesByPlayerIds(tribePlayers);
-
-                let outside = [];
-
-                myVillages.forEach((v) => {
-                    enemyCoords.forEach((ec) => {
-                        const d = twSDK.calculateDistance(ec, v.villageCoords);
-                        if (d > distance) {
-                            const pop = calculatePop(v.troops);
-                            if (pop > 30000) outside.push({ ...v, fieldsAway: Math.round(d*100)/100, stackAmount: pop });
-                        }
-                    });
-                });
-
-                outside.sort((a,b)=>a.fieldsAway-b.fieldsAway);
-                const uniq = {};
-                outside.forEach(it => { if (!uniq[it.villageId]) uniq[it.villageId] = it; });
-
-                const rows = Object.values(uniq).map((v, idx) => `
-                    <tr>
-                        <td>${idx+1}</td>
-                        <td class="ra-tal"><a href="/game.php?screen=info_village&id=${v.villageId}" target="_blank">${v.villageName}</a></td>
-                        <td>${intToString(v.stackAmount)}</td>
-                        <td>${v.fieldsAway}</td>
-                    </tr>
-                `).join('');
-
-                const html = `
-                    <div class="ra-table-container ra-mb15">
-                        <table class="ra-table ra-table-v3" width="100%">
-                            <thead><tr><th>#</th><th class="ra-tal">${twSDK.tt('Village')}</th><th>${twSDK.tt('Pop.')}</th><th>${twSDK.tt('Distance')}</th></tr></thead>
-                            <tbody>${rows}</tbody>
-                        </table>
-                    </div>
-                `;
-
-                const id = 'raFrontlineStacks-popup';
-                jQuery('#' + id).remove();
-                jQuery('body').append(`
-                    <div id="${id}" style="position:fixed;top:10vh;right:10vh;z-index:99999;border:2px solid #7d510f;border-radius:10px;padding:10px;width:560px;max-height:70vh;overflow:auto;background:#e3d5b3 url('/graphic/index/main_bg.jpg') repeat;">
-                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                            <strong>${scriptInfo}</strong>
-                            <a href="#" id="${id}_close" style="font-weight:bold;text-decoration:none;">X</a>
-                        </div>
-                        ${html}
-                    </div>
-                `);
-                jQuery('#' + id + '_close').on('click', function(ev){ ev.preventDefault(); jQuery('#' + id).remove(); });
-            });
-        }
-
         function handleExport() {
             jQuery('#raExport').on('click', function (e) {
                 e.preventDefault();
@@ -715,21 +643,90 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
             });
         }
 
+        function normalizeScope(s) {
+            if (s === 'support') return 'support';
+            if (s === 'in_village') return 'in_village';
+            return 'total';
+        }
+
         // ======================
-        // DATA: suas tropas (SUPPORT-AWARE)
+        // DATA: suas tropas (type=home/all/support)
         // ======================
         async function fetchMyVillagesTroops(scope) {
-            let url = `/game.php?screen=overview_villages&mode=units&village=${game_data.village.id}`;
-            if (game_data.player.sitter != '0') url += `&t=${game_data.player.id}`;
+            const base =
+                `/game.php?screen=overview_villages&mode=units&village=${game_data.village.id}` +
+                (game_data.player.sitter != '0' ? `&t=${game_data.player.id}` : '');
 
-            const scopeLabel = (scope === 'total') ? 'TOTAL (inclui apoio)' : 'NA ALDEIA';
-            UI.InfoMessage(`${scriptInfo}: ${twSDK.tt('Reading troops block...')} ${scopeLabel}`);
+            // Tenta tipos “oficiais” mais comuns do TW.
+            // Se o mundo não reconhecer, ele devolve a mesma página — e a gente detecta.
+            const candidates = (() => {
+                if (scope === 'in_village') return [
+                    base + `&type=home`,
+                    base + `&type=in_village`,
+                    base, // fallback
+                ];
+                if (scope === 'support') return [
+                    base + `&type=support`,
+                    base + `&type=help`,
+                    base,
+                ];
+                // total
+                return [
+                    base + `&type=all`,
+                    base + `&type=combined`,
+                    base + `&type=total`,
+                    base,
+                ];
+            })();
 
-            try {
-                const html = await jQuery.get(url);
+            // vamos tentar até achar uma variação real
+            let lastParsed = [];
+            let lastSignature = null;
+
+            for (let i = 0; i < candidates.length; i++) {
+                const url = candidates[i];
+                try {
+                    UI.InfoMessage(`[FSP] ${twSDK.tt('Reading troops...')} (${scope}) [try ${i+1}/${candidates.length}]`);
+
+                    const html = await jQuery.get(url);
+                    const parsed = parseUnitsOverview(html);
+
+                    if (!parsed.length) continue;
+
+                    // cria uma assinatura rápida (primeira aldeia + soma de tropas)
+                    const sig = signature(parsed);
+
+                    lastParsed = parsed;
+                    if (lastSignature === null) {
+                        lastSignature = sig;
+                        // continua tentando se scope=total para achar uma página diferente da "home"
+                        if (scope !== 'total') return parsed;
+                    } else {
+                        // se mudou, achamos uma aba diferente -> retorna
+                        if (sig !== lastSignature) return parsed;
+                    }
+
+                    // se for a última tentativa, retorna o que tiver
+                    if (i === candidates.length - 1) return parsed;
+
+                } catch (e) {
+                    if (DEBUG) console.error('fetchMyVillagesTroops error on', url, e);
+                    continue;
+                }
+            }
+
+            return lastParsed;
+
+            function signature(arr) {
+                const a = arr[0];
+                const sum = Object.values(a.troops || {}).reduce((acc, n) => acc + (Number(n) || 0), 0);
+                return `${a.villageId}|${a.villageCoords}|${sum}`;
+            }
+
+            function parseUnitsOverview(html) {
                 const doc = jQuery.parseHTML(html);
 
-                // 1) acha a tabela de unidades
+                // encontra tabela que tem ícones de unidade
                 let $table = jQuery(doc).find('table#units_table').first();
                 if (!$table.length) {
                     jQuery(doc).find('table.vis').each(function () {
@@ -739,75 +736,26 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
                 }
                 if (!$table.length) return [];
 
-                // 2) Descobre o RANGE de colunas do grupo desejado (Na aldeia vs Total)
-                const $theadRows = $table.find('thead tr');
-                const $groupRow = $theadRows.eq(0);
-                const $iconRow  = $theadRows.length > 1 ? $theadRows.eq(1) : $theadRows.eq(0);
-
-                const IN_VILLAGE_RE = /(na\s+aldeia|na\s+vila|aldeia|in\s+village|village)/i;
-                const OUTSIDE_RE    = /(fora|outside|a\s+caminho|em\s+movimento)/i;
-                const TOTAL_RE      = /(total|todos|all)/i;
-
-                let targetRange = null;
-
-                if ($groupRow.length && $groupRow.find('th[colspan]').length) {
-                    let colCursor = 0;
-                    $groupRow.find('th').each(function () {
-                        const $th = jQuery(this);
-                        const text = ($th.text() || '').trim();
-                        const colspan = parseInt($th.attr('colspan') || '1', 10) || 1;
-
-                        const start = colCursor;
-                        const end = colCursor + colspan - 1;
-
-                        const isInVillage = IN_VILLAGE_RE.test(text) && !OUTSIDE_RE.test(text) && !TOTAL_RE.test(text);
-                        const isTotal = TOTAL_RE.test(text);
-
-                        if (scope === 'total') {
-                            if (isTotal) targetRange = { start, end };
-                        } else {
-                            if (isInVillage) targetRange = { start, end };
-                        }
-
-                        colCursor += colspan;
-                    });
-                }
-
-                // 3) unit -> índice de coluna
-                //    Se não achou range (mundo diferente), usa fallback:
-                //    - scope=total: pega a ÚLTIMA ocorrência do ícone (geralmente Total)
-                //    - scope=in_village: pega a PRIMEIRA ocorrência (geralmente Na aldeia)
+                // descobre colunas por unit (pega a PRIMEIRA ocorrência de cada unit na header)
+                // (quando o tipo=all/home/suport muda de verdade, a própria tabela muda, então já resolve)
                 const unitColIndex = {};
-                const unitColIndexLast = {};
-                const $ths = $iconRow.find('th');
+                const $thead = $table.find('thead tr');
+                const $iconRow = $thead.length ? $thead.last() : null;
+                if (!$iconRow || !$iconRow.length) return [];
 
-                $ths.each(function (i) {
-                    if (targetRange && (i < targetRange.start || i > targetRange.end)) return;
-
+                $iconRow.find('th').each(function (i) {
                     const $img = jQuery(this).find('img[src*="/graphic/unit/unit_"]');
                     if (!$img.length) return;
-
                     const src = $img.attr('src') || '';
                     const m = src.match(/unit_([a-z0-9_]+)\./i);
                     if (!m || !m[1]) return;
-
                     const unit = m[1];
-
                     if (unitColIndex[unit] === undefined) unitColIndex[unit] = i;
-                    unitColIndexLast[unit] = i;
                 });
-
-                // fallback sem range: força primeira/última
-                if (!targetRange) {
-                    Object.keys(unitColIndexLast).forEach((u) => {
-                        unitColIndex[u] = (scope === 'total') ? unitColIndexLast[u] : unitColIndex[u];
-                    });
-                }
 
                 const unitsInTable = game_data.units.filter(u => unitColIndex[u] !== undefined);
                 if (!unitsInTable.length) return [];
 
-                // 4) Lê linhas -> aldeias
                 const out = [];
                 $table.find('tbody tr').each(function () {
                     const $tr = jQuery(this);
@@ -843,9 +791,6 @@ if (typeof TROOPS_SCOPE === 'undefined') TROOPS_SCOPE = 'total';
                 });
 
                 return out;
-            } catch (e) {
-                console.error(scriptInfo, 'Erro no fetch/parse overview:', e);
-                return [];
             }
         }
     }
