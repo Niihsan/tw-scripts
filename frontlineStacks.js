@@ -391,31 +391,58 @@
     const rows = $t.find('tr').toArray().map((r) => $(r));
     const villagesByKey = new Map();
 
+    // NOVA ESTRATÉGIA: procura pares (header de vila + linha "Na aldeia" logo abaixo)
     for (let i = 0; i < rows.length; i++) {
       const $r = rows[i];
-      if (!isNaAldeiaRow($r)) continue;
+      const text = $r.text().replace(/\s+/g, ' ').trim();
+      
+      // É um header de vila?
+      const cm = text.match(coordsRegex);
+      if (!cm) continue;
+      
+      const coords = cm[0];
+      const vid = extractVillageIdFromRow($r);
+      
+      // Procura a linha "Na aldeia" LOGO ABAIXO (máximo 5 linhas)
+      let foundNaAldeia = false;
+      for (let j = i + 1; j < rows.length && j <= i + 5; j++) {
+        const $naAldeia = rows[j];
+        if (isNaAldeiaRow($naAldeia)) {
+          // ACHAMOS O PAR!
+          let name = '';
+          const $bestLink = $r.find('a').filter((_, a) => {
+            const h = $(a).attr('href') || '';
+            return h.includes('village=') || h.includes('info_village');
+          }).first();
+          if ($bestLink.length) name = ($bestLink.text() || '').trim();
+          if (!name) {
+            name = text.split(coords)[0].trim();
+            if (!name) name = `Vila ${coords}`;
+          }
+          
+          const troops = readTroopsFromNaAldeiaRow($naAldeia, $t);
 
-      const vh = findVillageHeaderAbove(rows, i);
-      if (!vh) continue;
+          // DEBUG: loga a primeira vila com tropas
+          if (villagesByKey.size === 0 && (troops.spear > 0 || troops.sword > 0)) {
+            console.log('DEBUG primeira vila:', coords);
+            console.log('  spear:', troops.spear);
+            console.log('  sword:', troops.sword);
+            console.log('  axe:', troops.axe);
+            console.log('  heavy:', troops.heavy);
+          }
 
-      const troops = readTroopsFromNaAldeiaRow($r, $t);
-
-      // DEBUG: loga a primeira vila com tropas
-      if (villagesByKey.size === 0 && (troops.spear > 0 || troops.sword > 0)) {
-        console.log('DEBUG primeira vila:', vh.coords);
-        console.log('  spear:', troops.spear);
-        console.log('  sword:', troops.sword);
-        console.log('  axe:', troops.axe);
-        console.log('  heavy:', troops.heavy);
+          const key = vid ? `id:${vid}` : `c:${coords}`;
+          villagesByKey.set(key, {
+            villageId: vid || 0,
+            villageName: name,
+            villageCoords: coords,
+            troops,
+          });
+          
+          foundNaAldeia = true;
+          break;
+        }
       }
-
-      const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
-      villagesByKey.set(key, {
-        villageId: vh.id || 0,
-        villageName: vh.name,
-        villageCoords: vh.coords,
-        troops,
-      });
     }
 
     const villages = Array.from(villagesByKey.values());
