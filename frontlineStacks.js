@@ -3,7 +3,7 @@
 
   const SCRIPT = {
     name: 'Frontline Stacks Planner',
-    version: 'member-ui (fix colspan rows + fix tag collision BO vs -B.O-)',
+    version: 'member-ui (fix header+row virtual cols + display tags with [] )',
     prefix: 'ra_frontline_member',
   };
 
@@ -28,7 +28,7 @@
     distance: 5,
     stackLimitK: 100,
     scaleDownPerFieldK: 5,
-    req: { spear: 15000, sword: 15000, heavy: 500, spy: 0 }, // heavy = Cavalaria pesada
+    req: { spear: 15000, sword: 15000, heavy: 15000, spy: 0 }, // heavy agora aparece no missing
   };
 
   function msgInfo(t) { (window.UI && UI.InfoMessage) ? UI.InfoMessage(t) : console.log(t); }
@@ -109,7 +109,7 @@
     #${SCRIPT.prefix}_modal .list{ margin-top:10px; border:1px solid #bd9c5a; background:#fff7e1; }
     #${SCRIPT.prefix}_modal .list .item{ display:flex; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid #e0c48b; }
     #${SCRIPT.prefix}_modal .list .item:last-child{ border-bottom:none; }
-    #${SCRIPT.prefix}_modal .tag{ font-weight:800; min-width:80px; }
+    #${SCRIPT.prefix}_modal .tag{ font-weight:800; min-width:110px; }
     #${SCRIPT.prefix}_modal .name{ opacity:.9; }
   `;
 
@@ -188,7 +188,7 @@
           <div class="mRow">
             <div style="flex:1; min-width:220px;">
               <label>Filtrar</label>
-              <input id="raTribeFilter" type="text" placeholder="ex: BO / nome da tribo..." />
+              <input id="raTribeFilter" type="text" placeholder="ex: [BO] / -B.O- / nome..." />
             </div>
             <div style="display:flex; gap:10px; align-items:flex-end;">
               <a class="btn" href="javascript:void(0)" id="raSelectAllShown">Marcar exibidas</a>
@@ -196,7 +196,7 @@
               <a class="btn" href="javascript:void(0)" id="raApplyTribes"><b>Aplicar</b></a>
             </div>
           </div>
-          <div class="small" style="margin-top:6px;">Dica: você pode selecionar várias tribos e o script vai considerar todas.</div>
+          <div class="small" style="margin-top:6px;">Mostrando tags sempre como <b>[TAG]</b> (sem confundir BO com -B.O-).</div>
           <div class="list" id="raTribeList"></div>
         </div>
       </div>
@@ -219,24 +219,30 @@
     localStorage.setItem(LS_KEY, JSON.stringify(tags || []));
   }
 
-  // ✅ FIX (BO): não colidir "BO" com "-B.O-" — preserva '-' e '.'
+  // ✅ Mantém '.' e '-' para NÃO colidir BO com -B.O-
+  // ✅ Aceita input com [] (o user pode digitar [BO] no filtro etc)
   function normalizeTag(t) {
     return String(t || '')
       .replace(/^\uFEFF/, '')
       .normalize('NFKC')
-      .replace(/[\u200B-\u200D\uFEFF]/g, '') // zero-width
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .trim()
       .toUpperCase()
-      .replace(/[\[\]\s]/g, '')              // remove só colchetes e espaços
-      .replace(/[^A-Z0-9.\-]/g, '');         // mantém '.' e '-' (não cola BO com -B.O-)
+      .replace(/[\[\]\s]/g, '')        // remove só [] e espaços
+      .replace(/[^A-Z0-9.\-]/g, '');   // mantém '.' e '-'
   }
 
-  let selectedTags = loadSelectedTags();
+  function displayTag(tagNormalized) {
+    const t = normalizeTag(tagNormalized);
+    return t ? `[${t}]` : '';
+  }
+
+  let selectedTags = loadSelectedTags().map(normalizeTag).filter(Boolean);
 
   function updateSelectedTagsUI() {
-    const text = selectedTags.length ? selectedTags.map(t => `[${t}]`).join(', ') : '(nenhuma)';
+    const text = selectedTags.length ? selectedTags.map(displayTag).join(', ') : '(nenhuma)';
     $('#raEnemyTags').val(text);
-    $('#raTribesPill').text(`tribos: ${selectedTags.length ? selectedTags.join(', ') : '(nenhuma)'}`);
+    $('#raTribesPill').text(`tribos: ${selectedTags.length ? selectedTags.map(displayTag).join(', ') : '(nenhuma)'}`);
   }
 
   // ========= Overview reader =========
@@ -264,16 +270,38 @@
     return null;
   }
 
-  function headerUnitColumnMap($headerRow) {
+  // ✅ virtual cells (colspan-aware)
+  function getVirtualCells($row) {
+    const out = [];
+    let col = 0;
+    const $cells = $row.children('td,th');
+    $cells.each(function () {
+      const $c = $(this);
+      const span = Math.max(1, parseInt($c.attr('colspan') || '1', 10) || 1);
+      out.push({ $c, start: col, span });
+      col += span;
+    });
+    return out;
+  }
+
+  function textAtVirtualIndex(virtualCells, idx) {
+    for (const it of virtualCells) {
+      if (idx >= it.start && idx < it.start + it.span) return it.$c.text();
+    }
+    return '';
+  }
+
+  // ✅ FIX principal: mapear colunas do HEADER por índice virtual (start)
+  function headerUnitVirtualIndexMap($headerRow) {
     const map = {};
-    const cells = $headerRow.children('th,td');
-    cells.each(function (idx) {
-      const $img = $(this).find('img[src*="/graphic/unit/unit_"]').first();
-      if (!$img.length) return;
+    const vc = getVirtualCells($headerRow);
+    for (const it of vc) {
+      const $img = it.$c.find('img[src*="/graphic/unit/unit_"]').first();
+      if (!$img.length) continue;
       const src = $img.attr('src') || '';
       const m = src.match(/unit_([a-z_]+)\.(png|webp)/i);
-      if (m) map[m[1]] = idx;
-    });
+      if (m) map[m[1]] = it.start; // índice VIRTUAL!
+    }
     return map;
   }
 
@@ -320,36 +348,12 @@
     return null;
   }
 
-  // ✅ FIX (colspan): cria "colunas virtuais" para cada célula (respeitando colspan)
-  function getVirtualCells($row) {
-    const out = [];
-    let col = 0;
-    const $cells = $row.children('td,th');
-    $cells.each(function () {
-      const $c = $(this);
-      const span = Math.max(1, parseInt($c.attr('colspan') || '1', 10) || 1);
-      out.push({ $c, start: col, span });
-      col += span;
-    });
-    return out;
-  }
-
-  function textAtVirtualIndex(virtualCells, idx) {
-    for (const it of virtualCells) {
-      if (idx >= it.start && idx < it.start + it.span) {
-        return it.$c.text();
-      }
-    }
-    return '';
-  }
-
-  // ✅ FIX (colspan): lê tropas usando o índice do header, mas na linha com colspan
-  function readTroopsFromNaAldeiaRow($r, unitColMap) {
+  function readTroopsFromNaAldeiaRow($r, unitVirtualMap) {
     const troops = {};
     const vc = getVirtualCells($r);
 
-    for (const [unit, colIdx] of Object.entries(unitColMap)) {
-      const raw = textAtVirtualIndex(vc, colIdx);
+    for (const [unit, vIdx] of Object.entries(unitVirtualMap)) {
+      const raw = textAtVirtualIndex(vc, vIdx);
       troops[unit] = cleanInt(raw);
     }
     return troops;
@@ -368,12 +372,15 @@
     const $hdr = findHeaderRowWithUnitIcons($t);
     if (!$hdr) throw new Error('Não achei o cabeçalho de unidades.');
 
-    const unitColMap = headerUnitColumnMap($hdr);
+    const unitVirtualMap = headerUnitVirtualIndexMap($hdr);
 
     // mínimo necessário
-    const must = ['spear', 'sword', 'heavy'];
+    const must = ['spear', 'sword', 'heavy', 'spy'];
     for (const u of must) {
-      if (!(u in unitColMap)) throw new Error(`Cabeçalho não contém ${u}.`);
+      if (!(u in unitVirtualMap)) {
+        // não bloqueia o script inteiro — só alerta (mundo pode não ter algumas unidades)
+        console.warn(`[${SCRIPT.name}] Cabeçalho não contém ${u}.`);
+      }
     }
 
     const rows = $t.find('tr').toArray().map((r) => $(r));
@@ -386,7 +393,7 @@
       const vh = findVillageHeaderAbove(rows, i);
       if (!vh) continue;
 
-      const troops = readTroopsFromNaAldeiaRow($r, unitColMap);
+      const troops = readTroopsFromNaAldeiaRow($r, unitVirtualMap);
 
       const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
       villagesByKey.set(key, {
@@ -410,7 +417,7 @@
       fetchText(`${base}/map/player.txt`),
       fetchText(`${base}/map/ally.txt`),
     ]);
-    return { villages: parseCSV(villTxt), players: parseCSV(plyTxt), allies: parseCSV(allyTxt) };
+    return { worldVillages: parseCSV(villTxt), players: parseCSV(plyTxt), allies: parseCSV(allyTxt) };
   }
 
   function tribeIdsFromSelectedTags(allies, tags) {
@@ -454,6 +461,7 @@
       const need = Number(needRaw) || 0;
       if (need <= 0) continue;
 
+      // mantém spy + heavy sem scale (como era)
       const nonScaling = (unit === 'spy' || unit === 'heavy');
       const effectiveNeed = nonScaling ? need : Math.max(0, need - scale);
 
@@ -579,7 +587,8 @@
       return;
     }
 
-    const q = ($('#raTribeFilter').val() || '').trim().toLowerCase();
+    const qRaw = ($('#raTribeFilter').val() || '').trim();
+    const q = normalizeTag(qRaw); // aceita filtro com [BO]
     const items = [];
 
     for (const a of cachedAllies) {
@@ -589,14 +598,17 @@
       const tag = normalizeTag(tagRaw);
       if (!id || !tag) continue;
 
-      const hay = (`${tag} ${name} ${tagRaw}`).toLowerCase();
-      if (q && !hay.includes(q)) continue;
+      // filtro: compara com tag normalizada ou nome
+      if (q) {
+        const hay = `${tag} ${String(name).toUpperCase()}`;
+        if (!hay.includes(q)) continue;
+      }
 
       const checked = selectedTags.includes(tag) ? 'checked' : '';
       items.push(`
         <div class="item">
           <input type="checkbox" class="raTribeChk" data-tag="${tag}" ${checked}/>
-          <div class="tag">[${tag}]</div>
+          <div class="tag">${displayTag(tag)}</div>
           <div class="name">${name}</div>
         </div>
       `);
@@ -629,7 +641,7 @@
     const myVillages = await fetchMyVillagesFromOverviewNaAldeia();
 
     msgInfo('Carregando dados do mundo (tribos/jogadores/vilas)...');
-    const { villages: worldVillages, players, allies } = await fetchWorldData();
+    const { worldVillages, players, allies } = await fetchWorldData();
 
     const tribeIds = tribeIdsFromSelectedTags(allies, input.tags);
     if (!tribeIds.length) {
@@ -739,7 +751,7 @@
       saveSelectedTags(selectedTags);
       updateSelectedTagsUI();
       closeModal();
-      msgOk(`Tribos aplicadas: ${selectedTags.length ? selectedTags.join(', ') : '(nenhuma)'}`);
+      msgOk(`Tribos aplicadas: ${selectedTags.length ? selectedTags.map(displayTag).join(', ') : '(nenhuma)'}`);
     });
   }
 
