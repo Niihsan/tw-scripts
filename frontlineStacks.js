@@ -849,14 +849,16 @@ window.twSDK = {
         let missingTroopsString = '';
         for (let [key, value] of Object.entries(missingTroops || {})) {
             if (!Number.isFinite(value)) continue;
+            if (value <= 0) continue;
             missingTroopsString += `${key}: ${value}\n`;
         }
         return missingTroopsString;
     }
 
-    // Helper: Build units chooser table (dynamic units, BR138 ok)
+    // Helper: Build units chooser table (now guarantees spy + heavy if available)
     function buildUnitsChooserTable() {
-        const preferred = ['spear', 'sword', 'archer', 'spy', 'heavy'];
+        // IMPORTANT: include spy + heavy (and the common frontline def)
+        const preferred = ['spear', 'sword', 'spy', 'heavy', 'archer'];
         const defTroopTypes = preferred.filter(u => game_data.units.includes(u));
 
         let thUnits = ``;
@@ -977,7 +979,11 @@ window.twSDK = {
         });
     }
 
-    // ✅ FIX AQUI: agora spy/heavy também entram em "missingTroops"
+    // Helper: Calculate missing troop amounts for every village
+    // FIXED:
+    // - includes spy + heavy
+    // - shows ONLY what is actually missing (required - have)
+    // - scaling applies only to scaling units; spy/heavy do NOT scale down
     function calculateMissingTroops(
         troops,
         unitAmounts,
@@ -987,29 +993,25 @@ window.twSDK = {
         let missingTroops = {};
         const nonScalingUnits = ['spy', 'heavy'];
 
-        distance = distance - 1;
+        const steps = Math.max(0, (parseInt(distance, 10) || 0) - 1);
 
-        for (let [key, value] of Object.entries(unitAmounts)) {
+        for (let [key, value] of Object.entries(unitAmounts || {})) {
             if (!game_data.units.includes(key)) continue;
 
-            const have = Number(troops?.[key] ?? 0);
+            let required = Number(value || 0);
+            if (required <= 0) continue;
 
-            // non-scaling: compara direto (sem scaleDown)
-            if (nonScalingUnits.includes(key)) {
-                if (value > 0 && have < value) {
-                    missingTroops[key] = Math.trunc(value - have);
-                }
-                continue;
+            if (!nonScalingUnits.includes(key)) {
+                required = required - steps * scaleDownPerField * 1000;
             }
 
-            // scaling units:
-            let troopsAfterScalingDown =
-                value - parseInt(distance, 10) * scaleDownPerField * 1000;
+            if (required <= 0) continue;
 
-            if (troopsAfterScalingDown > 0) {
-                if (have < troopsAfterScalingDown) {
-                    missingTroops[key] = Math.trunc(troopsAfterScalingDown - have);
-                }
+            const have = Number(troops?.[key] ?? 0);
+            const miss = required - have;
+
+            if (miss > 0) {
+                missingTroops[key] = Math.trunc(miss);
             }
         }
 
@@ -1189,17 +1191,68 @@ window.twSDK = {
     }
 
     // =============================
-    // MEMBER DATA: YOUR troops from overview
+    // MEMBER DATA: YOUR troops from overview ("NA ALDEIA")
     // =============================
     async function fetchMyVillagesTroops() {
         const scriptInfo = twSDK.scriptInfo();
 
-        let url = `/game.php?screen=overview_villages&mode=units&village=${game_data.village.id}`;
-        if (game_data.player.sitter != '0') url += `&t=${game_data.player.id}`;
+        let baseUrl = `/game.php?screen=overview_villages&mode=units&village=${game_data.village.id}`;
+        if (game_data.player.sitter != '0') baseUrl += `&t=${game_data.player.id}`;
+
+        function normalizeHref(href) {
+            if (!href) return null;
+            if (/^https?:\/\//i.test(href)) return href;
+            if (href.startsWith('/')) return href;
+            if (href.startsWith('game.php')) return '/' + href;
+            return href;
+        }
+
+        // Find and follow the "Na aldeia" tab/link (instead of "Próprias tropas")
+        function findInVillageUrl(docRoot) {
+            const $doc = jQuery(docRoot);
+
+            // Most robust: look for link text (pt/en)
+            const wanted = /na\s+aldeia|in\s+village/i;
+
+            let found = null;
+            $doc.find('a').each(function () {
+                if (found) return;
+                const txt = jQuery(this).text().trim();
+                const href = jQuery(this).attr('href') || '';
+                if (wanted.test(txt) && /mode=units/.test(href)) {
+                    found = normalizeHref(href);
+                }
+            });
+
+            // Fallback: sometimes there's a select / option - try to pick it if present
+            if (!found) {
+                $doc.find('option').each(function () {
+                    if (found) return;
+                    const txt = jQuery(this).text().trim();
+                    const val = jQuery(this).attr('value') || '';
+                    if (/na\s+aldeia|in\s+village/i.test(txt) && /mode=units/.test(val)) {
+                        found = normalizeHref(val);
+                    }
+                });
+            }
+
+            return found;
+        }
 
         try {
-            const html = await jQuery.get(url);
-            const doc = jQuery.parseHTML(html);
+            // 1) Load base
+            let html = await jQuery.get(baseUrl);
+            let doc = jQuery.parseHTML(html);
+
+            // 2) Try to switch to "Na aldeia"
+            const inVillageUrl = findInVillageUrl(doc);
+            if (inVillageUrl) {
+                if (DEBUG) console.debug(`${scriptInfo} Switching to in-village URL:`, inVillageUrl);
+                html = await jQuery.get(inVillageUrl);
+                doc = jQuery.parseHTML(html);
+            } else {
+                if (DEBUG) console.debug(`${scriptInfo} Could not find explicit "Na aldeia" link; using base URL (may depend on last selected tab).`);
+            }
 
             // Try common table IDs/selectors
             let $table = jQuery(doc).find('table#units_table').first();
