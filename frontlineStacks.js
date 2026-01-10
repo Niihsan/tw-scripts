@@ -1,26 +1,14 @@
-/* 
- * Frontline Stacks Planner (Member Edition) — BR138
- * FIX (overview_villages&mode=units):
- *  - Detecta tabela mesmo sem THEAD (header no TBODY)
- *  - Mapeia colunas por ÍCONES (unit_*.png/webp)
- *  - Encontra o header da vila acima via parâmetro village=XXXX
- *  - Lê a linha "Na aldeia" (inclui apoios) corretamente
- */
-
 (function () {
   'use strict';
 
   const SCRIPT = {
     name: 'Frontline Stacks Planner',
-    version: 'v.member-BR138-overview_villages-units-fix',
-    prefix: 'ra_frontline_member_br138',
+    version: 'member-fix-colshift-only',
+    prefix: 'ra_frontline_member',
   };
 
   const $ = window.jQuery;
-  if (!$) {
-    alert('Este script precisa do jQuery (normalmente o TW já tem).');
-    return;
-  }
+  if (!$) { alert('Este script precisa do jQuery (TW normalmente já tem).'); return; }
 
   const coordsRegex = /\b\d{1,3}\|\d{1,3}\b/;
   const isMap = new URL(location.href).searchParams.get('screen') === 'map';
@@ -30,35 +18,19 @@
     return;
   }
 
-  // ======= Configs =======
   const UNITS_POP = {
-    spear: 1,
-    sword: 1,
-    axe: 1,
-    archer: 1,
-    spy: 2,
-    light: 4,
-    marcher: 5,
-    heavy: 6,
-    ram: 5,
-    catapult: 8,
-    knight: 10,
-    snob: 100,
+    spear: 1, sword: 1, axe: 1, archer: 1, spy: 2,
+    light: 4, marcher: 5, heavy: 6, ram: 5, catapult: 8,
+    knight: 10, snob: 100
   };
 
   const DEFAULT = {
     distance: 5,
     stackLimitK: 100,
     scaleDownPerFieldK: 5,
-    req: {
-      spear: 15000,
-      sword: 15000,
-      heavy: 500,
-      spy: 0,
-    },
+    req: { spear: 15000, sword: 15000, heavy: 500, spy: 0 },
   };
 
-  // ======= Helpers =======
   function msgInfo(t) { (window.UI && UI.InfoMessage) ? UI.InfoMessage(t) : console.log(t); }
   function msgOk(t) { (window.UI && UI.SuccessMessage) ? UI.SuccessMessage(t) : console.log(t); }
   function msgErr(t) { (window.UI && UI.ErrorMessage) ? UI.ErrorMessage(t) : alert(t); }
@@ -86,15 +58,10 @@
     return val + u.s;
   }
 
-  function parseCSV(text) {
-    return text.trim().split('\n').map((l) => l.split(','));
-  }
+  function parseCSV(text) { return text.trim().split('\n').map((l) => l.split(',')); }
+  async function fetchText(url) { return $.ajax({ url, method: 'GET' }); }
 
-  async function fetchText(url) {
-    return $.ajax({ url, method: 'GET' });
-  }
-
-  // ======= UI =======
+  // ===== UI =====
   const style = `
     #${SCRIPT.prefix}{ border:1px solid #603000; background:#f4e4bc; margin:10px 0 15px; }
     #${SCRIPT.prefix} *{ box-sizing:border-box; }
@@ -123,7 +90,6 @@
   `;
 
   function unitImg(unit) { return `/graphic/unit/unit_${unit}.png`; }
-
   function unitInput(unit, val) {
     return `
       <div>
@@ -143,12 +109,12 @@
           <h3>${SCRIPT.name}</h3>
           <div class="small"><b>${SCRIPT.version}</b></div>
         </div>
-        <div class="sub">member • lendo <b>"Na aldeia"</b> do overview_villages (inclui apoios) • leitura por ícones</div>
+        <div class="sub">member • lendo <b>"Na aldeia"</b> do overview (inclui apoios)</div>
         <div class="body">
           <div class="grid4">
             <div>
               <label>Select enemy tribes</label>
-              <input id="raEnemyTags" type="text" placeholder="Ex: [BO], [TAG2]" />
+              <input id="raEnemyTags" type="text" placeholder="Ex: [BO]" />
             </div>
             <div>
               <label>Distance</label>
@@ -196,13 +162,13 @@
     const stackLimitK = Math.max(0, Number($('#raStackLimit').val()) || 0);
     const scaleDownK = Math.max(0, Number($('#raScaleDown').val()) || 0);
 
-    if (!tagsRaw) return { error: 'Você precisa informar ao menos uma tag inimiga (ex: BO).' };
+    if (!tagsRaw) return { error: 'Informe ao menos uma tag inimiga (ex: [BO]).' };
 
+    // (mantém simples como antes) aceita [BO] ou BO
     const tags = tagsRaw
       .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean)
-      .map((t) => t.replace(/^\[|\]$/g, '').replace(/[\[\]]/g, '').trim());
+      .map(t => t.trim())
+      .filter(Boolean);
 
     const req = {};
     $('.raReq').each(function () {
@@ -213,31 +179,23 @@
     return { tags, distance, stackLimitK, scaleDownK, req };
   }
 
-  // ======= Overview reader (fix for overview_villages&mode=units) =======
-
+  // ===== Overview reader =====
   function pickUnitsTableFromHTML(doc) {
     const $tables = $(doc).find('table.vis');
     if (!$tables.length) return null;
 
-    let best = null;
-    let bestScore = -1;
-
+    let best = null, bestScore = -1;
     $tables.each(function () {
       const $t = $(this);
-      const iconCountAll = $t.find('img[src*="/graphic/unit/unit_"]').length;
+      const iconCount = $t.find('img[src*="/graphic/unit/unit_"]').length;
       const rows = $t.find('tr').length;
-      const score = iconCountAll * 10 + rows;
-      if (score > bestScore && iconCountAll >= 8) {
-        best = $t;
-        bestScore = score;
-      }
+      const score = iconCount * 10 + rows;
+      if (score > bestScore && iconCount >= 8) { best = $t; bestScore = score; }
     });
-
     return best;
   }
 
   function findHeaderRowWithUnitIcons($t) {
-    // Pode estar em thead, ou como primeira linha no tbody
     const $rows = $t.find('tr').toArray().map(r => $(r));
     for (const $r of $rows) {
       const icons = $r.find('img[src*="/graphic/unit/unit_"]');
@@ -267,7 +225,6 @@
   }
 
   function extractVillageIdFromRow($r) {
-    // procura qualquer link com village=XXXX
     const hrefs = $r.find('a[href*="village="]').toArray().map(a => $(a).attr('href') || '');
     for (const href of hrefs) {
       const m = href.match(/[?&]village=(\d+)/);
@@ -277,10 +234,8 @@
   }
 
   function findVillageHeaderAbove(rows, idx) {
-    // sobe procurando um "header" com coords e village=XXXX
     for (let j = idx; j >= 0 && j >= idx - 12; j--) {
       const $r = rows[j];
-
       const text = $r.text().replace(/\s+/g, ' ').trim();
       const cm = text.match(coordsRegex);
       if (!cm) continue;
@@ -288,41 +243,43 @@
       const coords = cm[0];
       const vid = extractVillageIdFromRow($r);
 
-      // Nome: tenta pegar o primeiro link "forte" da vila; senão usa texto até coords
       let name = '';
       const $bestLink = $r.find('a').filter((_, a) => {
         const h = $(a).attr('href') || '';
-        return h.includes('village=') || h.includes('screen=info_village') || h.includes('info_village');
+        return h.includes('village=') || h.includes('info_village');
       }).first();
-
       if ($bestLink.length) name = ($bestLink.text() || '').trim();
-
       if (!name) {
-        // pega trecho antes das coords
         name = text.split(coords)[0].trim();
         if (!name) name = `Vila ${coords}`;
       }
-
-      // Mesmo que não ache villageId, ainda retorna coords e nome (fallback)
-      return { id: vid, name, coords };
+      return { id: vid || 0, name, coords };
     }
     return null;
   }
 
-  function readTroopsFromRow($r, unitColIdx) {
+  // ===========================
+  // ✅ FIX ÚNICO IMPORTANTE: COLUNA DESLOCADA
+  // ===========================
+  function readTroopsFromRow_FIXED($r, unitColIdx, headerCellCount) {
     const cells = $r.children('td,th');
     const troops = {};
+
+    // Se a linha de dados tem mais colunas que o header, ajusta o índice
+    // (isso é o que estava “pulando coluna” e trocando spear/sword/axe/heavy)
+    const delta = Math.max(0, cells.length - headerCellCount);
+
     Object.keys(unitColIdx).forEach((unit) => {
       const idx = unitColIdx[unit];
-      troops[unit] = cleanInt(cells.eq(idx).text());
+      const realIdx = idx + delta;
+      troops[unit] = cleanInt(cells.eq(realIdx).text());
     });
+
     return troops;
   }
 
   async function fetchMyVillagesFromOverviewNaAldeia() {
     const base = location.origin;
-
-    // seu URL confirmado
     const url = `${base}/game.php?screen=overview_villages&mode=units&group=0`;
 
     const html = await fetchText(url);
@@ -332,16 +289,15 @@
     if (!$t) throw new Error('Não achei a tabela de tropas no overview.');
 
     const $hdr = findHeaderRowWithUnitIcons($t);
-    if (!$hdr) throw new Error('Não achei o cabeçalho de unidades (ícones).');
+    if (!$hdr) throw new Error('Não achei o cabeçalho de unidades.');
 
     const unitColIdx = buildUnitColumnMapFromHeaderRow($hdr);
+    const headerCellCount = $hdr.children('th,td').length;
 
-    // garante que colunas críticas existam
     const must = ['spear', 'sword', 'heavy'];
     const miss = must.filter((u) => unitColIdx[u] == null);
     if (miss.length) throw new Error(`Cabeçalho sem colunas: ${miss.join(', ')}`);
 
-    // pega as linhas do tbody (ou todas, mas vamos usar todas e filtrar)
     const rows = $t.find('tr').toArray().map((r) => $(r));
     const villagesByKey = new Map();
 
@@ -352,11 +308,10 @@
       const vh = findVillageHeaderAbove(rows, i);
       if (!vh) continue;
 
-      const troops = readTroopsFromRow($r, unitColIdx);
+      // usa o FIX de colunas (única alteração real)
+      const troops = readTroopsFromRow_FIXED($r, unitColIdx, headerCellCount);
 
-      // key: se tem id usa id; se não, coords
       const key = vh.id ? `id:${vh.id}` : `c:${vh.coords}`;
-
       villagesByKey.set(key, {
         villageId: vh.id || 0,
         villageName: vh.name,
@@ -366,12 +321,11 @@
     }
 
     const villages = Array.from(villagesByKey.values());
-    if (!villages.length) throw new Error('Não encontrei nenhuma linha "Na aldeia" associada a uma vila.');
-
+    if (!villages.length) throw new Error('Não consegui ler suas vilas no overview.');
     return villages;
   }
 
-  // ======= World data =======
+  // ===== World data =====
   async function fetchWorldData() {
     const base = location.origin;
     const [villTxt, plyTxt, allyTxt] = await Promise.all([
@@ -382,12 +336,36 @@
     return { villages: parseCSV(villTxt), players: parseCSV(plyTxt), allies: parseCSV(allyTxt) };
   }
 
+  // ===========================
+  // ✅ VOLTA A FUNCIONAR COM TAGS COMO ANTES (tolera [BO], BO, espaços)
+  // ===========================
+  function normalizeTag(t) {
+    return String(t || '')
+      .trim()
+      .replace(/^\[|\]$/g, '')      // remove colchete nas pontas
+      .replace(/[\[\]]/g, '')       // remove colchetes no meio também
+      .trim()
+      .toLowerCase();
+  }
+
   function tribeIdsFromTags(allies, tags) {
-    const wanted = new Set(tags.map((t) => t.toLowerCase()));
-    return allies
-      .filter((a) => a[0] && a[2] && wanted.has(String(a[2]).toLowerCase()))
+    const wanted = new Set(tags.map(normalizeTag).filter(Boolean));
+
+    // 1ª passada: coluna 2 (tag) exata normalizada
+    let ids = allies
+      .filter((a) => a[0] && a[2] && wanted.has(normalizeTag(a[2])))
       .map((a) => Number(a[0]))
       .filter(Boolean);
+
+    if (ids.length) return ids;
+
+    // 2ª passada: tenta comparar com o texto original também (caso algum formato estranho)
+    ids = allies
+      .filter((a) => a[0] && a[2] && [...wanted].includes(String(a[2]).trim().toLowerCase()))
+      .map((a) => Number(a[0]))
+      .filter(Boolean);
+
+    return ids;
   }
 
   function playerIdsFromTribeIds(players, tribeIds) {
@@ -405,7 +383,6 @@
       .map((v) => `${v[2]}|${v[3]}`);
   }
 
-  // ======= Stack logic =======
   function calcPop(troops) {
     let total = 0;
     for (const [u, n] of Object.entries(troops || {})) {
@@ -511,25 +488,29 @@
     document.body.removeChild(ta);
   }
 
-  // ======= Main =======
   let lastRows = [];
 
   async function calculate() {
     const input = readInputs();
     if (input.error) return msgErr(input.error);
 
-    msgInfo('Lendo suas vilas no overview_villages (Na aldeia)...');
+    msgInfo('Lendo suas vilas no overview (Na aldeia)...');
     const myVillages = await fetchMyVillagesFromOverviewNaAldeia();
 
     msgInfo('Carregando dados do mundo (tribos/jogadores/vilas)...');
     const { villages: worldVillages, players, allies } = await fetchWorldData();
 
     const tribeIds = tribeIdsFromTags(allies, input.tags);
-    if (!tribeIds.length) return msgErr('Não encontrei nenhuma tribo com essas tags no ally.txt.');
+
+    // 👇 volta a não “matar” o script à toa
+    if (!tribeIds.length) {
+      msgErr('Não encontrei nenhuma tribo com essa tag em ally.txt. Verifique a tag (ex: [BO]) ou tente outra.');
+      return;
+    }
 
     const enemyPlayers = playerIdsFromTribeIds(players, tribeIds);
     const enemyCoords = coordsFromPlayerIds(worldVillages, enemyPlayers);
-    if (!enemyCoords.length) return msgErr('Não consegui obter coordenadas das vilas inimigas (village.txt).');
+    if (!enemyCoords.length) return msgErr('Não consegui obter coords das vilas inimigas.');
 
     const rows = [];
     for (const v of myVillages) {
@@ -587,7 +568,6 @@
     });
   }
 
-  // init
   try {
     mountUI();
     bind();
