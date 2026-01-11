@@ -19,8 +19,8 @@ var scriptConfig = {
     scriptData: {
         prefix: 'frontlineStacksPlanner',
         name: `Frontline Stacks Planner`,
-        version: 'v1.0.3-member',
-        author: 'RedAlert + member adaptation',
+        version: 'v1.0.3-Niihsan',
+        author: 'RedAlert + Niihsan',
         authorUrl: 'https://twscripts.dev/',
         helpLink:
             'https://forum.tribalwars.net/index.php?threads/frontline-stacks-planner.291478/',
