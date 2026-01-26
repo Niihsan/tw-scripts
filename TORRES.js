@@ -1,4 +1,4 @@
-javascript:(async function(){
+(async function(){
   try{
     if(!/screen=map/.test(location.href) && !(window.game_data&&game_data.screen==='map')){
       alert('Abra o MAPA (screen=map) antes de rodar.');
